@@ -213,14 +213,30 @@
   /* ======================================================
    * Router
    * ====================================================== */
+  // En claude.ai la página no puede usar rutas en la URL: navegamos en memoria
+  const MEM = !!S.memoryRouter;
+  const MANAGED = !!S.managedAuth; // la cuenta la gestiona Claude: sin contraseña ni cierre de sesión
+  let memHash = '#/';
+  const memStack = [];
+  const getHash = () => (MEM ? memHash : location.hash);
+  function setHash(h) {
+    if (!MEM) { location.hash = h; return; }
+    if (h === memHash) return;
+    memStack.push(memHash);
+    if (memStack.length > 50) memStack.shift();
+    memHash = h;
+    closeModal();
+    render();
+  }
+
   function parseHash() {
-    const raw = location.hash.replace(/^#\/?/, '');
+    const raw = getHash().replace(/^#\/?/, '');
     const [path, query = ''] = raw.split('?');
     const parts = path.split('/').filter(Boolean).map(decodeURIComponent);
     const params = Object.fromEntries(new URLSearchParams(query));
     return { name: parts[0] || 'feed', parts, params };
   }
-  const go = (h) => { if (location.hash === h) render(); else location.hash = h; };
+  const go = (h) => { if (getHash() === h) render(); else setHash(h); };
 
   const ROUTES = {
     feed: () => FeedPage(),
@@ -243,12 +259,13 @@
     const app = $('#app');
 
     if (!me) {
-      if (route.name !== 'register') route.name = 'login';
+      if (MANAGED) route.name = 'register';
+      else if (route.name !== 'register') route.name = 'login';
       app.innerHTML = route.name === 'register' ? RegisterPage() : LoginPage();
       mountAuth();
       return;
     }
-    if (route.name === 'login' || route.name === 'register') { location.hash = '#/'; return; }
+    if (route.name === 'login' || route.name === 'register') { setHash('#/'); return; }
 
     const page = ROUTES[route.name] || (() => NotFound());
     const { html, mount } = normalize(page(route));
@@ -288,7 +305,7 @@
         </nav>
         <div class="sidebar-foot">
           <a href="#/edit" class="nav-item${active === 'edit' ? ' active' : ''}"><span class="nav-ico">${I.settings}</span><span class="nav-label">Configuración</span></a>
-          <button class="nav-item" data-action="logout"><span class="nav-ico">${I.logout}</span><span class="nav-label">Cerrar sesión</span></button>
+          ${MANAGED ? '' : `<button class="nav-item" data-action="logout"><span class="nav-ico">${I.logout}</span><span class="nav-label">Cerrar sesión</span></button>`}
         </div>
       </aside>
 
@@ -366,7 +383,7 @@
       <div class="auth-col">
         <div class="card auth-card">
           <h1 class="logo-text big">Visvet</h1>
-          <p class="muted center">Regístrate para compartir y cuidar mejor a tus pacientes o mascotas.</p>
+          <p class="muted center">${MANAGED ? 'Crea tu perfil para empezar a compartir y cuidar mejor a tus pacientes o mascotas.' : 'Regístrate para compartir y cuidar mejor a tus pacientes o mascotas.'}</p>
           <div class="role-switch" role="radiogroup">
             <button type="button" class="role-opt${vet ? ' active' : ''}" data-role="vet" role="radio" aria-checked="${vet}">
               <span class="role-ico">${I.stethoscope}</span><b>Soy veterinario/a</b><small>Perfil profesional verificado, agenda de citas</small></button>
@@ -376,8 +393,8 @@
           <form id="register-form" class="stack">
             <input name="name" placeholder="Nombre completo" required maxlength="60">
             <input name="username" placeholder="Nombre de usuario" required maxlength="30" autocomplete="username" pattern="[A-Za-z0-9._]{3,30}" title="3-30 caracteres: letras, números, punto o guion bajo">
-            <input name="email" type="email" placeholder="Correo electrónico" required autocomplete="email">
-            <input name="password" type="password" placeholder="Contraseña (mín. 6 caracteres)" minlength="6" required autocomplete="new-password">
+            ${MANAGED ? '' : `<input name="email" type="email" placeholder="Correo electrónico" required autocomplete="email">
+            <input name="password" type="password" placeholder="Contraseña (mín. 6 caracteres)" minlength="6" required autocomplete="new-password">`}
             <input name="city" placeholder="Ciudad" maxlength="40">
             ${vet ? `
               <div class="form-section">${I.stethoscope} Datos profesionales</div>
@@ -395,18 +412,18 @@
                 <select name="petSpecies">${SPECIES.map((s) => `<option>${s}</option>`).join('')}</select>
               </div>
             `}
-            <button class="btn primary block">Registrarte</button>
+            <button class="btn primary block">${MANAGED ? 'Crear mi perfil' : 'Registrarte'}</button>
             <p class="form-error" id="auth-error"></p>
           </form>
         </div>
-        <div class="card auth-card small-pad center">¿Tienes una cuenta? <a href="#/login" class="strong-link">Inicia sesión</a></div>
+        ${MANAGED ? '<div class="card auth-card small-pad center muted">Entras con tu cuenta de Claude: no necesitas contraseña.</div>' : '<div class="card auth-card small-pad center">¿Tienes una cuenta? <a href="#/login" class="strong-link">Inicia sesión</a></div>'}
       </div>
     </div>`;
   }
 
   function afterLogin() {
     const n = parseHash().name;
-    if (n === 'login' || n === 'register' || !location.hash) location.hash = '#/';
+    if (n === 'login' || n === 'register' || !getHash()) setHash('#/');
     render();
   }
 
@@ -430,7 +447,7 @@
       $$('[data-role]').forEach((b) => (b.onclick = () => {
         // conservar lo escrito al cambiar de rol
         const keep = {};
-        ['name', 'username', 'email', 'password', 'city'].forEach((k) => (keep[k] = reg[k].value));
+        ['name', 'username', 'email', 'password', 'city'].forEach((k) => { if (reg[k]) keep[k] = reg[k].value; });
         registerRole = b.dataset.role;
         render();
         const r2 = $('#register-form');
@@ -440,8 +457,8 @@
         e.preventDefault();
         const f = e.target;
         const data = {
-          role: registerRole, name: f.name.value, username: f.username.value, email: f.email.value,
-          password: f.password.value, city: f.city.value,
+          role: registerRole, name: f.name.value, username: f.username.value,
+          email: f.email ? f.email.value : '', password: f.password ? f.password.value : '', city: f.city.value,
         };
         if (registerRole === 'vet') {
           Object.assign(data, { clinic: f.clinic.value.trim(), license: f.license.value.trim(), specialty: f.specialty.value });
@@ -454,7 +471,7 @@
           // seguir automáticamente a algunos veterinarios para que el inicio no esté vacío
           const vets = S.data.users.filter((x) => x.role === 'vet' && x.id !== u.id).slice(0, 3).map((v) => v.id);
           if (vets.length) S.updateUser(u.id, { following: vets });
-          location.hash = '#/';
+          setHash('#/');
           render();
           toast(`¡Bienvenido/a a Visvet, ${u.name}! 🐾`);
         } catch (ex) { err(ex.message); }
@@ -597,7 +614,7 @@
           <div class="me-row">
             <a href="#/u/${esc(me.username)}">${avatar(me, 44)}</a>
             <div class="grow"><div>${userLink(me)}</div><small class="muted">${esc(me.name)}</small></div>
-            <button class="link-btn" data-action="logout">Salir</button>
+            ${MANAGED ? '' : '<button class="link-btn" data-action="logout">Salir</button>'}
           </div>
           ${upcoming.length ? `
             <div class="side-box">
@@ -785,13 +802,13 @@
           const np = { ...params };
           if (v) np.q = v; else delete np.q;
           // si busca un nombre de usuario exacto, sugerimos pestañas de personas
-          location.hash = '#/explore?' + new URLSearchParams(np);
+          setHash('#/explore?' + new URLSearchParams(np));
         };
         const sf = $('#spec-filter');
         if (sf) sf.onchange = () => {
           const np = { ...params, spec: sf.value };
           if (!sf.value) delete np.spec;
-          location.hash = '#/explore?' + new URLSearchParams(np);
+          setHash('#/explore?' + new URLSearchParams(np));
         };
       },
     };
@@ -991,7 +1008,7 @@
           </div>
           <form id="profile-form" class="stack">
             <label class="field"><span>Nombre</span><input name="name" value="${esc(me.name)}" required maxlength="60"></label>
-            ${FB ? `<div class="field"><span>Correo electrónico</span><small class="muted">${esc(S.authEmail())} · privado, no lo ve nadie más</small></div>`
+            ${MANAGED ? '' : FB ? `<div class="field"><span>Correo electrónico</span><small class="muted">${esc(S.authEmail())} · privado, no lo ve nadie más</small></div>`
               : `<label class="field"><span>Correo electrónico</span><input name="email" type="email" value="${esc(me.email)}" maxlength="80"></label>`}
             <label class="field"><span>Biografía</span><textarea name="bio" rows="3" maxlength="300">${esc(me.bio)}</textarea></label>
             <label class="field"><span>Ciudad</span><input name="city" value="${esc(me.city)}" maxlength="40"></label>
@@ -1025,18 +1042,18 @@
           </form>
         </div>` : ''}
 
-        <div class="card edit-card">
+        ${MANAGED ? '' : `<div class="card edit-card">
           <h3>Cambiar contraseña</h3>
           <form id="pw-form" class="stack">
             <input name="old" type="password" placeholder="Contraseña actual" required autocomplete="current-password">
             <input name="new" type="password" placeholder="Nueva contraseña" minlength="6" required autocomplete="new-password">
             <button class="btn ghost">Actualizar contraseña</button>
           </form>
-        </div>
+        </div>`}
 
         <div class="card edit-card danger-zone">
           <h3>Zona de peligro</h3>
-          <p class="muted tiny">${FB ? 'Al eliminar tu cuenta se borran tu perfil, tus publicaciones, historias, mensajes enviados y citas.' : 'Modo demo: los datos de Visvet se guardan solo en este navegador.'}</p>
+          <p class="muted tiny">${FB || MANAGED ? 'Al eliminar tu cuenta se borran tu perfil, tus publicaciones, historias, mensajes enviados y citas.' : 'Modo demo: los datos de Visvet se guardan solo en este navegador.'}</p>
           <div class="row-wrap">
             ${FB ? '' : '<button class="btn ghost" data-action="reset-demo">Restablecer datos de demostración</button>'}
             <button class="btn danger" data-action="delete-account">Eliminar mi cuenta</button>
@@ -1069,7 +1086,7 @@
           toast(`${f.name.value.trim()} añadido/a 🐾`);
           render();
         };
-        $('#pw-form').onsubmit = async (e) => {
+        if ($('#pw-form')) $('#pw-form').onsubmit = async (e) => {
           e.preventDefault();
           try { await S.changePassword(me.id, e.target.old.value, e.target.new.value); toast('Contraseña actualizada 🔒'); e.target.reset(); }
           catch (ex) { toast(ex.message, 'error'); }
@@ -1354,10 +1371,13 @@
     'close-modal': () => closeModal(),
     'close-modal-bg': (el, e) => { if (e.target === el) closeModal(); },
     go: (el) => go(el.dataset.href),
-    back: () => (history.length > 1 ? history.back() : go('#/')),
+    back: () => {
+      if (MEM) { if (memStack.length) { memHash = memStack.pop(); closeModal(); render(); } else go('#/'); return; }
+      if (history.length > 1) history.back(); else go('#/');
+    },
     logout: async () => {
       if (await confirmModal('¿Cerrar sesión?', '', 'Cerrar sesión')) {
-        await S.logout(); location.hash = '#/login'; render();
+        await S.logout(); setHash('#/login'); render();
       }
     },
     like: (el) => { S.toggleLike(el.dataset.id, me.id); refreshPost(el.dataset.id); },
@@ -1469,7 +1489,7 @@
     'remove-avatar': () => { S.updateUser(me.id, { avatar: '' }); render(); },
     'reset-demo': async () => {
       if (await confirmModal('¿Restablecer Visvet?', 'Se borrarán todas las cuentas y publicaciones de este navegador y se cargarán los datos de demostración.', 'Restablecer', true)) {
-        await S.reset(); location.hash = '#/login'; render(); toast('Datos de demostración restaurados');
+        await S.reset(); setHash('#/login'); render(); toast('Datos de demostración restaurados');
       }
     },
     'delete-account': async () => {
@@ -1481,7 +1501,7 @@
       }
       try {
         await S.deleteUser(me.id, password);
-        location.hash = '#/login'; render(); toast('Cuenta eliminada');
+        setHash('#/login'); render(); toast('Cuenta eliminada');
       } catch (e) { toast(e.message, 'error'); }
     },
     forgot: async () => {
@@ -1494,6 +1514,7 @@
   };
 
   function copyLink(hash) {
+    if (MEM) { toast('Para compartirla, envíala por mensaje con el botón de enviar ✈️'); return; }
     const url = location.href.split('#')[0] + hash;
     const done = () => toast('Enlace copiado 🔗');
     if (navigator.clipboard && window.isSecureContext) navigator.clipboard.writeText(url).then(done, () => toast(url));
@@ -1502,6 +1523,15 @@
 
   document.addEventListener('click', (e) => {
     const el = e.target.closest('[data-action]');
+    if (MEM) {
+      const a = e.target.closest('a[href^="#"]');
+      if (a && (!el || (el !== a && el.contains(a)) || (el === a && el.dataset.action === 'close-modal'))) {
+        e.preventDefault();
+        closeModal();
+        setHash(a.getAttribute('href'));
+        return;
+      }
+    }
     if (!el) return;
     const fn = actions[el.dataset.action];
     if (!fn) return;
@@ -1558,7 +1588,7 @@
     }
   });
 
-  window.addEventListener('hashchange', () => { closeModal(); render(); });
+  if (!MEM) window.addEventListener('hashchange', () => { closeModal(); render(); });
 
   // Si otra pestaña cambia los datos, refrescamos (sin perder lo que se escribe)
   S.onChange(() => {

@@ -73,6 +73,16 @@ En **Configuración → Restablecer datos de demostración** puedes volver al es
 
 ---
 
+## 💬 Versión en claude.ai (sin crear ninguna cuenta externa)
+
+`visvet-claude.html` es la misma Visvet publicada como página de claude.ai, con base de datos compartida. Cada persona entra con **su cuenta de Claude**, sin contraseñas.
+
+- Para usarla, el propietario la comparte desde el menú **Compartir** de la página, invitando a cada persona por correo como **Editor**.
+- Cada usuario solo puede escribir en sus propios datos: nadie puede borrar ni modificar el perfil, las publicaciones o las citas de otro.
+- Los mensajes y las citas solo se muestran a las personas implicadas, pero técnicamente cualquier miembro con acceso podría leerlos desde la base de datos. No uses la mensajería para datos sensibles.
+
+---
+
 ## 🔥 Firebase: convertirla en una red social real
 
 Visvet tiene **dos modos**:
@@ -139,6 +149,8 @@ css/styles.css               Estilos (tema claro/oscuro, responsive)
 js/icons.js                  Iconos SVG
 js/store.js                  Datos en modo demo (localStorage)
 js/store-firebase.js         Datos en modo Firebase (Authentication + Firestore)
+js/store-claude.js           Datos en la versión de claude.ai
+visvet-claude.html           Página de entrada de la versión de claude.ai
 js/firebase-config.js        Tu configuración de Firebase (vacía = modo demo)
 js/boot.js                   Elige el modo y arranca la app
 js/seed.js                   Datos e ilustraciones de demostración

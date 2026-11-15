@@ -16,6 +16,8 @@
   --accent: #f97316;
   --danger: #ed4956;
   --like: #ff3040;
+  --link: #00376b;
+  --chip-filter: none;
   --grad: linear-gradient(45deg, #0f9d8a 0%, #2bb673 45%, #7fd34e 75%, #f5c542 100%);
   --radius: 12px;
   --sidebar: 244px;
@@ -23,7 +25,7 @@
   color-scheme: light;
 }
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme="light"]) {
     --bg: #000;
     --card: #0f0f0f;
     --text: #f5f5f5;
@@ -32,8 +34,23 @@
     --soft: #1f1f1f;
     --hover: #1a1a1a;
     --shadow: 0 8px 30px rgba(0, 0, 0, .6);
+    --link: #e0f1ff;
+    --chip-filter: brightness(.85) saturate(1.2);
     color-scheme: dark;
   }
+}
+:root[data-theme="dark"] {
+  --link: #e0f1ff;
+  --chip-filter: brightness(.85) saturate(1.2);
+  --bg: #000;
+  --card: #0f0f0f;
+  --text: #f5f5f5;
+  --muted: #a8a8a8;
+  --border: #262626;
+  --soft: #1f1f1f;
+  --hover: #1a1a1a;
+  --shadow: 0 8px 30px rgba(0, 0, 0, .6);
+  color-scheme: dark;
 }
 
 * { box-sizing: border-box; }
@@ -317,7 +334,7 @@ textarea { resize: vertical; }
 .cat-adopcion { background: #e7f7e3; color: #15803d; }
 .cat-aviso { background: #fde8e8; color: #b91c1c; }
 .cat-antesdespues { background: #fef3c7; color: #a16207; }
-@media (prefers-color-scheme: dark) { .cat-chip { filter: brightness(.85) saturate(1.2); } }
+.cat-chip { filter: var(--chip-filter); }
 @media (max-width: 420px) { .post-head .cat-chip { display: none; } }
 
 .post-media { position: relative; background: var(--soft); user-select: none; -webkit-user-select: none; }
@@ -331,8 +348,7 @@ textarea { resize: vertical; }
 .post-actions { display: flex; align-items: center; margin-left: -8px; margin-right: -8px; }
 .likes-line { font-weight: 600; display: block; margin: 2px 0 6px; }
 .caption { margin-bottom: 6px; word-wrap: break-word; }
-.mention, .hashtag { color: #00376b; }
-@media (prefers-color-scheme: dark) { .mention, .hashtag { color: #e0f1ff; } }
+.mention, .hashtag { color: var(--link); }
 .view-all { display: block; margin-bottom: 4px; }
 .comments { list-style: none; padding: 0; margin: 0 0 6px; display: flex; flex-direction: column; gap: 3px; }
 .comment { display: flex; align-items: flex-start; justify-content: space-between; gap: 6px; word-wrap: break-word; }
