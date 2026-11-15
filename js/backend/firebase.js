@@ -3,7 +3,7 @@
  * Los documentos (PDF, fotos) se guardan troceados en Firestore, así el
  * proyecto funciona con el plan gratuito sin necesitar Cloud Storage.
  */
-import { compressImage, readDataURL, dataURLtoBlob, fileKind } from '../ui.js';
+import { compressImage, readDataURL, dataURLtoBlob, fileKind } from '../ui.js?v=5';
 
 const V = '10.12.2';
 const BASE = `https://www.gstatic.com/firebasejs/${V}`;
@@ -29,7 +29,7 @@ const ERR = {
 };
 const tr = (e) => (e && ERR[e.code] ? new Error(ERR[e.code]) : e instanceof Error ? e : new Error(String(e)));
 
-export async function createFirebaseBackend(cfg, adminEmail) {
+export async function createFirebaseBackend(cfg) {
   const [{ initializeApp }, A, F] = await Promise.all([
     import(`${BASE}/firebase-app.js`), import(`${BASE}/firebase-auth.js`), import(`${BASE}/firebase-firestore.js`),
   ]);
@@ -40,29 +40,35 @@ export async function createFirebaseBackend(cfg, adminEmail) {
     A.connectAuthEmulator(auth, `http://${cfg.emulatorHost || '127.0.0.1'}:9099`, { disableWarnings: true });
     F.connectFirestoreEmulator(db, cfg.emulatorHost || '127.0.0.1', 8080);
   }
-  const ADMIN = String(adminEmail || '').trim().toLowerCase();
-  const { doc, collection, query, where, orderBy, limit, onSnapshot, getDoc, getDocs, setDoc, updateDoc, deleteDoc, writeBatch, increment } = F;
+  const { doc, collection, query, where, orderBy, limit, onSnapshot, getDoc, getDocs, setDoc, updateDoc, deleteDoc, writeBatch, increment, runTransaction } = F;
+  const ADMIN_DOC = doc(db, 'meta', 'admin');
+  let adminUid = null;   // uid de la cuenta de la clínica (null si aún no existe)
   const C = (...p) => collection(db, ...p);
   const newId = (col) => doc(C(col)).id;
   const toList = (snap) => snap.docs.map((d) => ({ id: d.id, ...d.data() }));
   const watchQ = (q, cb, map = toList) => onSnapshot(q, (s) => cb(map(s)), (e) => { console.error(e); window.dispatchEvent(new CustomEvent('backend-error', { detail: tr(e).message })); });
   const urlCache = new Map();
 
-  const toUser = (u) => (u ? {
-    uid: u.uid, email: (u.email || '').toLowerCase(), emailVerified: u.emailVerified,
-    isAdmin: !!ADMIN && (u.email || '').toLowerCase() === ADMIN && u.emailVerified,
-    wantsAdmin: !!ADMIN && (u.email || '').toLowerCase() === ADMIN,
-  } : null);
+  const toUser = (u) => (u ? { uid: u.uid, email: (u.email || '').toLowerCase(), isAdmin: !!adminUid && u.uid === adminUid } : null);
+  async function loadAdmin() {
+    try { const s = await getDoc(ADMIN_DOC); adminUid = s.exists() ? s.data().uid : null; }
+    catch (e) { console.error(e); }
+    return adminUid;
+  }
+  let authCb = () => {};
+  let holdAuth = false;   // durante el alta de la clínica no avisamos hasta terminar
 
   const B = {
     mode: 'firebase',
-    adminEmail: ADMIN,
     user: null,
 
     init(onAuth) {
+      authCb = onAuth;
       return new Promise((resolve) => {
         let first = true;
-        A.onAuthStateChanged(auth, (u) => {
+        A.onAuthStateChanged(auth, async (u) => {
+          if (holdAuth) return;
+          await loadAdmin();
           B.user = toUser(u);
           onAuth(B.user);
           if (first) { first = false; resolve(); }
@@ -70,26 +76,46 @@ export async function createFirebaseBackend(cfg, adminEmail) {
       });
     },
 
-    async signUp({ name, email, password, phone }) {
+    // ¿Existe ya la cuenta de la clínica? (se puede consultar sin iniciar sesión)
+    async adminExists() { return !!(await loadAdmin()); },
+
+    async signUp({ name, email, password, phone, asClinic = false }) {
+      holdAuth = true;
       try {
+        if (asClinic && (await loadAdmin())) throw new Error('Esta clínica ya tiene una cuenta de administración. Inicia sesión.');
         const cred = await A.createUserWithEmailAndPassword(auth, email.trim(), password);
+        const uid = cred.user.uid;
         await A.updateProfile(cred.user, { displayName: name.trim() }).catch(() => {});
-        const isClinic = (cred.user.email || '').toLowerCase() === ADMIN;
-        await setDoc(doc(db, 'users', cred.user.uid), { name: isClinic ? 'Visvet' : name.trim(), phone: phone || '', avatar: '', createdAt: Date.now() });
-        if (isClinic) await A.sendEmailVerification(cred.user).catch((e) => console.error('verify', e.code, e.message));
+        if (asClinic) {
+          try {
+            await runTransaction(db, async (tx) => {
+              if ((await tx.get(ADMIN_DOC)).exists()) throw new Error('Otra persona acaba de crear la cuenta de la clínica.');
+              tx.set(ADMIN_DOC, { uid, email: (cred.user.email || '').toLowerCase(), createdAt: Date.now() });
+            });
+          } catch (e) { await A.deleteUser(cred.user).catch(() => {}); throw e; }
+          adminUid = uid;
+          await setDoc(doc(db, 'users', uid), { name: name.trim(), phone: phone || '', avatar: '', createdAt: Date.now() });
+          await setDoc(doc(db, 'clinic', 'info'), { name: name.trim(), phone: phone || '', email: (cred.user.email || '').toLowerCase() }, { merge: true });
+        } else {
+          await setDoc(doc(db, 'users', uid), { name: name.trim(), phone: phone || '', avatar: '', createdAt: Date.now() });
+        }
+        holdAuth = false;
         B.user = toUser(auth.currentUser);
-      } catch (e) { throw tr(e); }
+        authCb(B.user);
+      } catch (e) {
+        holdAuth = false;
+        if (auth.currentUser && !B.user) { B.user = toUser(auth.currentUser); authCb(B.user); }
+        throw tr(e);
+      }
     },
     async signIn(email, password) {
       try { await A.signInWithEmailAndPassword(auth, email.trim(), password); } catch (e) { throw tr(e); }
     },
     async signOut() { urlCache.forEach((u) => URL.revokeObjectURL(u)); urlCache.clear(); await A.signOut(auth); },
     async resetPassword(email) { try { await A.sendPasswordResetEmail(auth, email.trim()); } catch (e) { throw tr(e); } },
-    async resendVerification() { try { await A.sendEmailVerification(auth.currentUser); } catch (e) { throw tr(e); } },
     async refreshUser() {
       if (!auth.currentUser) return null;
-      await auth.currentUser.reload();
-      await auth.currentUser.getIdToken(true);
+      await loadAdmin();
       B.user = toUser(auth.currentUser);
       return B.user;
     },

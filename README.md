@@ -43,26 +43,27 @@ Inspirada en iOS 26 ("Liquid Glass"):
 ### 1. Publicar en GitHub Pages
 1. En el repositorio: **Settings → Pages**.
 2. **Source: Deploy from a branch**. Elige la rama y la carpeta `/ (root)` y pulsa **Save**.
-3. A los 1-2 minutos estará en `https://<usuario>.github.io/<repositorio>/`.
+3. La app quedará en `https://<usuario>.github.io/<repositorio>/`.
 
-Sin Firebase, la app funciona en **modo demo**: hay datos de ejemplo guardados solo en el navegador, y botones para entrar como clínica o como cliente. Sirve para enseñarla y probarla.
-
-### 2. Conectar Firebase (datos reales y en tiempo real, unos 10 minutos)
+### 2. Conectar la base de datos (Firebase, gratis, unos 10 minutos)
 1. Crea un proyecto en <https://console.firebase.google.com>. Analytics no hace falta.
 2. **Authentication → Comenzar → Correo electrónico/contraseña → Habilitar**.
 3. **Authentication → Configuración → Dominios autorizados →** añade `<usuario>.github.io`.
 4. **Firestore Database → Crear base de datos → modo producción**. La ubicación `eur3` está bien.
-5. **Firestore → Reglas**: pega el contenido de [`firestore.rules`](firestore.rules), cambia `ADMIN_EMAIL_AQUI` por el correo de la clínica y pulsa **Publicar**.
-6. **⚙ Configuración del proyecto → Tus apps → `</>` (Web)**: registra la app y copia el bloque `firebaseConfig`.
-7. Pega ese bloque en [`js/config.js`](js/config.js), en `firebase:`, y pon el mismo correo de la clínica en `adminEmail`.
-8. Abre la app y **crea la cuenta de la clínica** con ese correo. Te llegará un correo de verificación; ábrelo y pulsa "Ya lo he verificado". A partir de ahí esa cuenta es la administradora.
+5. **Firestore → Reglas**: pega **tal cual** el contenido de [`firestore.rules`](firestore.rules) y pulsa **Publicar**.
+6. **⚙ Configuración del proyecto → Tus apps → `</>` (Web)**: registra la app y copia el bloque `firebaseConfig` en [`js/config.js`](js/config.js), en `firebase:`.
 
-Todo funciona con el **plan gratuito (Spark)**. Los documentos se guardan troceados en Firestore, así que no hace falta Cloud Storage, que ya no es gratuito.
+### 3. Crear la cuenta de la clínica
+Abre la app. Como todavía no hay clínica, aparece **«Configura tu clínica»**. Escribe el nombre de la clínica, el correo y la contraseña. Esa cuenta queda como **administradora** y nadie más podrá crear otra.
+
+Después comparte el enlace con tus clientes: cada uno crea su cuenta, añade a sus animales y ya puede escribiros.
+
+Todo funciona con el **plan gratuito (Spark)**. Los documentos se guardan troceados en Firestore, así que no hace falta Cloud Storage.
 
 ---
 
 ## 🔒 Seguridad (reglas de Firestore)
-- Solo la cuenta de la clínica, **con el correo verificado**, tiene permisos de administración.
+- Solo la primera cuenta de clínica creada desde la app tiene permisos de administración, y no se puede crear una segunda.
 - Cada cliente solo ve sus animales, sus chats, sus citas y sus documentos.
 - La cartilla solo la puede modificar la clínica. El cliente solo la lee.
 - El cliente solo puede cancelar sus citas; confirmar, rechazar o completarlas es cosa de la clínica.
@@ -73,11 +74,10 @@ index.html               Página de la app
 manifest.webmanifest     Instalación como app (PWA)
 sw.js                    Service worker (abre al instante)
 css/app.css              Estilos «Liquid Glass»
-js/config.js             Configuración de Firebase y correo de la clínica
+js/config.js             Configuración de Firebase
 js/app.js                Pantallas, navegación y lógica
 js/ui.js                 Iconos, avisos, hojas, archivos, confeti…
 js/backend/firebase.js   Datos en Firebase (tiempo real)
-js/backend/local.js      Modo demo (datos de ejemplo en el navegador)
 firestore.rules          Reglas de seguridad
 firebase.json            Emulador local de Firebase (desarrollo)
 ```

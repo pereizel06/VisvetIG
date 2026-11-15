@@ -2,30 +2,36 @@ rules_version = '2';
 
 // =====================================================================
 // Reglas de seguridad de Visvet (Cloud Firestore)
-// Cópialas en Firebase → Firestore Database → Reglas → Publicar.
+// Cópialas tal cual en Firebase → Firestore Database → Reglas → Publicar.
 //
-// IMPORTANTE: sustituye ADMIN_EMAIL_AQUI por el correo de la cuenta
-// de la clínica (en minúsculas), el mismo que en js/config.js.
+// La cuenta de administración es la primera «cuenta de clínica» que se
+// crea desde la app (documento meta/admin). Después nadie más puede serlo.
 // =====================================================================
 service cloud.firestore {
   match /databases/{database}/documents {
 
     function signedIn() { return request.auth != null; }
     function uid() { return request.auth.uid; }
-    // La clínica: su correo y verificado (nadie puede hacerse pasar por ella)
+    function adminPath() { return /databases/$(database)/documents/meta/admin; }
     function isAdmin() {
-      return signedIn()
-        && request.auth.token.email == 'ADMIN_EMAIL_AQUI'
-        && request.auth.token.email_verified == true;
+      return signedIn() && exists(adminPath()) && get(adminPath()).data.uid == request.auth.uid;
     }
     function petOwner(petId) {
       return get(/databases/$(database)/documents/pets/$(petId)).data.ownerId;
     }
     function changes() { return request.resource.data.diff(resource.data).affectedKeys(); }
 
+    // Quién es la clínica: se puede consultar siempre y solo se crea una vez
+    match /meta/admin {
+      allow get: if true;
+      allow create: if signedIn() && !exists(adminPath())
+                    && request.resource.data.uid == uid();
+      allow update, delete: if false;
+    }
+
     // Datos de la clínica (horario, teléfono…): todos los leen, solo la clínica edita
     match /clinic/{doc} {
-      allow read: if signedIn();
+      allow read: if true;
       allow write: if isAdmin();
     }
 

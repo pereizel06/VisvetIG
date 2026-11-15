@@ -1,10 +1,10 @@
 /* Visvet — aplicación (cliente y clínica) */
-import { CONFIG } from './config.js';
+import { CONFIG } from './config.js?v=5';
 import {
   $, $$, esc, I, SPECIES, speciesGrad, RECORD_TYPES, todayISO, parseISO, fmtDate, fmtDay, fmtTime, fmtMoney, fmtSize,
   timeAgo, chatStamp, daysUntil, ageOf, initials, greeting, haptic, toast, openSheet, closeSheet, anySheetOpen,
   actionSheet, confirmSheet, promptSheet, compressImage, fileKind, icsFor, downloadBlob, confetti, countUp,
-} from './ui.js';
+} from './ui.js?v=5';
 
 /* =========================================================
  * Estado
@@ -28,17 +28,16 @@ const clinicName = () => S.clinic.name || CONFIG.clinicName || 'Visvet';
  * Arranque
  * ========================================================= */
 async function boot() {
+  if (!(CONFIG.firebase && CONFIG.firebase.apiKey && CONFIG.firebase.projectId)) {
+    $('#view').innerHTML = SetupView();
+    return;
+  }
   try {
-    if (CONFIG.firebase && CONFIG.firebase.apiKey) {
-      const { createFirebaseBackend } = await import('./backend/firebase.js');
-      B = await createFirebaseBackend(CONFIG.firebase, CONFIG.adminEmail);
-    } else {
-      const { createLocalBackend } = await import('./backend/local.js');
-      B = createLocalBackend();
-    }
+    const { createFirebaseBackend } = await import('./backend/firebase.js?v=5');
+    B = await createFirebaseBackend(CONFIG.firebase);
   } catch (e) {
     console.error(e);
-    $('#view').innerHTML = `<div class="center-screen"><div class="glass card pad"><h2>No se pudo conectar</h2><p class="muted">Revisa tu conexión a internet y la configuración de Firebase.</p></div></div>`;
+    $('#view').innerHTML = `<div class="center-screen"><div class="glass card pad verify"><div class="empty-ico">${I.info}</div><h2>No se pudo conectar</h2><p class="muted">Revisa tu conexión a internet y vuelve a intentarlo.</p><button class="btn primary block" onclick="location.reload()">Reintentar</button></div></div>`;
     return;
   }
   window.VISVET = B;
@@ -48,13 +47,22 @@ async function boot() {
   if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});
 }
 
+// Se muestra solo mientras la app no está conectada a su base de datos
+function SetupView() {
+  return `<div class="center-screen"><div class="glass card pad verify rise">
+    <div class="hero-orb" style="--s:84px;width:84px;height:84px"><span></span></div>
+    <h2>Visvet está casi lista</h2>
+    <p class="muted">Falta conectar la base de datos de la clínica. Cuando esté conectada, aquí aparecerá la pantalla para crear la cuenta de la clínica y las de los clientes.</p>
+  </div></div>`;
+}
+
 function onAuth(user) {
   subs.forEach((u) => u()); subs = [];
   recSubs.forEach((u) => u()); recSubs.clear();
   if (msgSub) { msgSub(); msgSub = null; msgPetId = null; }
   Object.assign(S, { user, profile: null, pets: [], appts: [], users: [], clinic: {}, recs: {}, msgs: {}, loaded: false });
   seen.unread = {}; seen.recs = {}; seen.appts = {};
-  if (user && (!user.wantsAdmin || user.isAdmin)) {
+  if (user) {
     let pending = 3;
     const ready = () => { if (--pending === 0) { S.loaded = true; schedule(); } };
     const once = (fn) => { let done = false; return (v) => { fn(v); if (!done) { done = true; ready(); } }; };
@@ -181,7 +189,6 @@ function draw(isNav, opts = {}) {
   let v;
   if (!B) return;
   if (!S.user) v = AuthView();
-  else if (S.user.wantsAdmin && !S.user.isAdmin) v = VerifyView();
   else if (!S.loaded) v = { html: skeleton(), tabbar: true };
   else v = (isAdmin() ? adminView : ownerView)(r);
 
@@ -372,35 +379,40 @@ function petCard(p, i = 0) {
 /* =========================================================
  * Acceso
  * ========================================================= */
+let adminKnown = null;   // ¿existe ya la cuenta de la clínica?
+let adminChecked = 0;
+setInterval(() => { if (B && !S.user && adminKnown === false) schedule(); }, 5000);
 function AuthView() {
-  const login = ui.authTab === 'login';
-  const demo = B.mode === 'demo';
+  if (adminKnown === null || (adminKnown === false && Date.now() - adminChecked > 4000)) {
+    adminChecked = Date.now();
+    B.adminExists().then((x) => { const was = adminKnown; adminKnown = x; if (!x && was === null) ui.authTab = 'clinic'; if (was !== x) schedule(); }).catch(() => { adminKnown = true; schedule(); });
+  }
+  if (adminKnown && ui.authTab === 'clinic') ui.authTab = 'login';
+  const tab = ui.authTab;
+  const login = tab === 'login', clinic = tab === 'clinic';
+  const tabs = adminKnown === false ? [['clinic', 'Clínica'], ['login', 'Entrar'], ['signup', 'Cliente']] : [['login', 'Entrar'], ['signup', 'Crear cuenta']];
   return {
     cls: 'auth', tabbar: false,
     html: `<div class="auth">
       <div class="auth-hero rise">
         <div class="hero-orb"><span></span></div>
-        <h1 class="brand-title">${esc(CONFIG.clinicName || 'Visvet')}</h1>
-        <p class="brand-sub">Tu clínica veterinaria,<br>en el bolsillo.</p>
+        <h1 class="brand-title">${esc(S.clinic.name || CONFIG.clinicName || 'Visvet')}</h1>
+        <p class="brand-sub">${clinic ? 'Configura tu clínica<br>en un minuto.' : 'Tu clínica veterinaria,<br>en el bolsillo.'}</p>
       </div>
       <div class="glass auth-card rise" style="--i:1">
-        ${seg('authTab', ui.authTab, [['login', 'Entrar'], ['signup', 'Crear cuenta']])}
+        ${adminKnown === null ? '<div class="sk sk-row"></div>' : seg('authTab', tab, tabs)}
+        ${clinic ? `<div class="setup-note">${I.shield}<span><b>Cuenta de administración</b>Es la cuenta de la clínica: verá a todos los clientes, sus animales y sus chats. Solo se puede crear una.</span></div>` : ''}
         <form class="form" id="auth-form" novalidate>
-          ${login ? '' : `<label class="field"><span>Tu nombre</span><input name="name" data-keep="a-name" autocomplete="name" placeholder="Ana Martínez" required></label>
+          ${login ? '' : `<label class="field"><span>${clinic ? 'Nombre de la clínica' : 'Tu nombre'}</span><input name="name" data-keep="a-name" autocomplete="${clinic ? 'organization' : 'name'}" placeholder="${clinic ? 'Visvet' : 'Ana Martínez'}" required></label>
           <label class="field"><span>Teléfono <i>(opcional)</i></span><input name="phone" data-keep="a-phone" type="tel" autocomplete="tel" placeholder="+34 600 000 000"></label>`}
-          <label class="field"><span>Correo electrónico</span><input name="email" data-keep="a-email" type="email" autocomplete="email" placeholder="tu@correo.com" required></label>
+          <label class="field"><span>Correo electrónico</span><input name="email" data-keep="a-email" type="email" autocomplete="email" placeholder="${clinic ? 'clinica@correo.com' : 'tu@correo.com'}" required></label>
           <label class="field"><span>Contraseña</span><input name="password" data-keep="a-pw" type="password" autocomplete="${login ? 'current-password' : 'new-password'}" placeholder="${login ? '••••••••' : 'Mínimo 6 caracteres'}" required></label>
           <p class="form-error" id="auth-error"></p>
-          <button class="btn primary block lg">${login ? 'Entrar' : 'Crear mi cuenta'}</button>
-          ${login && !demo ? '<button type="button" class="btn plain block" data-act="forgot">¿Has olvidado la contraseña?</button>' : ''}
+          <button class="btn primary block lg">${login ? 'Entrar' : clinic ? 'Crear la cuenta de la clínica' : 'Crear mi cuenta'}</button>
+          ${login ? '<button type="button" class="btn plain block" data-act="forgot">¿Has olvidado la contraseña?</button>' : ''}
         </form>
-        ${demo ? `<div class="demo-box">
-          <p class="eyebrow">${I.sparkle} Modo demostración</p>
-          <div class="demo-btns">${B.demoAccounts.map((a) => `<button class="btn glass-btn" data-act="demo" data-email="${a.email}">${I[a.icon]} ${esc(a.label)}</button>`).join('')}</div>
-          <p class="tiny muted">Los datos de la demo se guardan solo en este navegador. Abre la app en dos pestañas, una como clínica y otra como cliente, y prueba el chat en tiempo real.</p>
-        </div>` : ''}
       </div>
-      <p class="auth-foot tiny muted rise" style="--i:2">Al crear tu cuenta podrás registrar a tus animales, ver su cartilla y hablar con la clínica.</p>
+      <p class="auth-foot tiny muted rise" style="--i:2">${clinic ? 'Después, tus clientes crearán su propia cuenta desde este mismo enlace.' : 'Al crear tu cuenta podrás registrar a tus animales, ver su cartilla y hablar con la clínica.'}</p>
     </div>`,
     mount() {
       const f = $('#auth-form');
@@ -411,32 +423,22 @@ function AuthView() {
         const btn = f.querySelector('.btn.primary');
         btn.classList.add('loading');
         try {
+          if (!f.email.value.trim() || !f.password.value) throw new Error('Escribe tu correo y tu contraseña.');
           if (login) await B.signIn(f.email.value, f.password.value);
           else {
-            if (!f.name.value.trim()) throw new Error('Escribe tu nombre.');
-            await B.signUp({ name: f.name.value, email: f.email.value, password: f.password.value, phone: f.phone.value });
-            toast('¡Cuenta creada! Bienvenido/a a Visvet');
+            if (!f.name.value.trim()) throw new Error(clinic ? 'Escribe el nombre de la clínica.' : 'Escribe tu nombre.');
+            await B.signUp({ name: f.name.value, email: f.email.value, password: f.password.value, phone: f.phone.value, asClinic: clinic });
+            adminKnown = true;
+            if (clinic) { toast('Clínica creada. Ya puedes recibir a tus clientes'); confetti(); }
+            else toast('¡Cuenta creada! Bienvenido/a');
           }
         } catch (ex) {
+          if (/ya tiene una cuenta|acaba de crear/.test(ex.message)) { adminKnown = true; ui.authTab = 'login'; }
           err.textContent = ex.message; btn.classList.remove('loading');
           f.classList.remove('shake'); void f.offsetWidth; f.classList.add('shake'); haptic([10, 30, 10]);
         }
       };
     },
-  };
-}
-
-function VerifyView() {
-  return {
-    cls: 'auth', tabbar: false,
-    html: `<div class="center-screen"><div class="glass card pad verify rise">
-      <div class="empty-ico">${I.mail}</div>
-      <h2>Verifica el correo de la clínica</h2>
-      <p class="muted">Por seguridad, la cuenta de administración necesita confirmar su correo. Te hemos enviado un enlace a <b>${esc(S.user.email)}</b>. Ábrelo y vuelve aquí.</p>
-      <button class="btn primary block lg" data-act="verify-check">Ya lo he verificado</button>
-      <button class="btn plain block" data-act="verify-resend">Reenviar el correo</button>
-      <button class="btn plain block" data-act="logout">Cerrar sesión</button>
-    </div></div>`,
   };
 }
 
@@ -581,9 +583,9 @@ function ProfileView() {
       ${clinicCard(2)}
       <div class="glass list rise" style="--i:3">
         <div class="row"><span class="row-ico" style="--c:#0a84ff">${I.bolt}</span><span class="grow"><b>Instalar la app</b><small class="muted">Safari: Compartir → Añadir a pantalla de inicio · Chrome: ⋮ → Instalar</small></span></div>
-        <div class="row"><span class="row-ico" style="--c:${B.mode === 'demo' ? '#ff9f0a' : '#30d158'}">${I.shield}</span><span class="grow"><b>${B.mode === 'demo' ? 'Modo demostración' : 'Conectado a la nube'}</b><small class="muted">${B.mode === 'demo' ? 'Los datos se guardan solo en este navegador.' : 'Tus datos se sincronizan en todos tus dispositivos.'}</small></span></div>
+        <div class="row"><span class="row-ico" style="--c:#30d158">${I.shield}</span><span class="grow"><b>Datos seguros en la nube</b><small class="muted">Se sincronizan al momento en todos tus dispositivos.</small></span></div>
         <button class="row" data-act="logout"><span class="row-ico" style="--c:#8e8e93">${I.logout}</span><span class="grow"><b>Cerrar sesión</b></span></button>
-        ${B.mode === 'demo' ? `<button class="row" data-act="reset-demo"><span class="row-ico" style="--c:#ff9f0a">${I.sparkle}</span><span class="grow"><b>Restablecer la demo</b></span></button>` : ''}
+        
         <button class="row danger" data-act="delete-account"><span class="row-ico" style="--c:#ff375f">${I.trash}</span><span class="grow"><b>Eliminar mi cuenta</b></span></button>
       </div>
     </div>`,
@@ -951,9 +953,10 @@ function AdminSettings() {
         <div class="row"><button class="btn primary sm ml-auto">Guardar</button></div>
       </form>
       <div class="glass list rise" style="--i:2">
-        <div class="row"><span class="row-ico" style="--c:${B.mode === 'demo' ? '#ff9f0a' : '#30d158'}">${I.shield}</span><span class="grow"><b>${B.mode === 'demo' ? 'Modo demostración' : 'Conectado a Firebase'}</b><small class="muted">${B.mode === 'demo' ? 'Conecta Firebase para usarla con clientes reales.' : 'Datos en tiempo real en todos los dispositivos.'}</small></span></div>
+        <div class="row"><span class="row-ico" style="--c:#30d158">${I.shield}</span><span class="grow"><b>Conectado a la nube</b><small class="muted">Tus clientes ven los cambios al instante. Comparte el enlace de la app para que creen su cuenta.</small></span></div>
+        <button class="row" data-act="copy" data-text="${esc(location.href.split('#')[0])}"><span class="row-ico" style="--c:#0a84ff">${I.copy}</span><span class="grow"><b>Copiar el enlace de la app</b><small class="muted">${esc(location.href.split('#')[0])}</small></span></button>
         <button class="row" data-act="logout"><span class="row-ico" style="--c:#8e8e93">${I.logout}</span><span class="grow"><b>Cerrar sesión</b></span></button>
-        ${B.mode === 'demo' ? `<button class="row" data-act="reset-demo"><span class="row-ico" style="--c:#ff9f0a">${I.sparkle}</span><span class="grow"><b>Restablecer la demo</b></span></button>` : ''}
+        
       </div>
     </div>`,
     mount() {
@@ -1233,16 +1236,12 @@ const ACT = {
   back: () => (history.length > 1 ? history.back() : go('#/')),
   seg: (el) => { ui[el.dataset.seg] = el.dataset.val; if (el.dataset.seg === 'authTab') $('#auth-error') && ($('#auth-error').textContent = ''); haptic(5); const s = el.closest('.seg'); $$('.seg-btn', s).forEach((b) => b.classList.toggle('active', b === el)); layoutSeg(s); setTimeout(() => draw(false), 180); },
   'rec-filter': (el) => { ui.recFilter = el.dataset.val; draw(false); },
-  demo: async (el) => { const a = B.demoAccounts.find((x) => x.email === el.dataset.email); el.classList.add('loading'); await B.signIn(a.email, a.password); },
   forgot: async () => {
     const email = await promptSheet('Recuperar contraseña', { label: 'Tu correo', type: 'email', value: ($('#auth-form') || {}).email?.value || '', ok: 'Enviar enlace' });
     if (!email) return;
     try { await B.resetPassword(email); toast('Te hemos enviado un correo para crear una nueva contraseña'); } catch (ex) { toast(ex.message, 'error'); }
   },
-  'verify-check': async () => { const u = await B.refreshUser(); if (u && u.isAdmin) { toast('Correo verificado'); onAuth(u); } else toast('Todavía no aparece verificado. Abre el enlace del correo.', 'error'); },
-  'verify-resend': async () => { try { await B.resendVerification(); toast('Correo reenviado'); } catch (ex) { toast(ex.message, 'error'); } },
-  logout: async () => { if (await confirmSheet('¿Cerrar sesión?', 'Cerrar sesión')) { await B.signOut(); location.hash = '#/'; } },
-  'reset-demo': async () => { if (await confirmSheet('¿Restablecer la demo? Se borrarán los cambios de este navegador.', 'Restablecer')) { await B.resetDemo(); toast('Demo restablecida'); } },
+  logout: async () => { if (await confirmSheet('¿Cerrar sesión?', 'Cerrar sesión')) { await B.signOut(); adminKnown = null; location.hash = '#/'; } },
   'delete-account': async () => {
     if (!(await confirmSheet('¿Eliminar tu cuenta? Se borrarán tus animales y citas.', 'Eliminar cuenta'))) return;
     const pw = await promptSheet('Confirma tu contraseña', { label: 'Contraseña', type: 'password', ok: 'Eliminar definitivamente' });
