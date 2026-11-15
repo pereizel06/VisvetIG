@@ -3,7 +3,7 @@
  * Los documentos (PDF, fotos) se guardan troceados en Firestore, así el
  * proyecto funciona con el plan gratuito sin necesitar Cloud Storage.
  */
-import { compressImage, readDataURL, dataURLtoBlob, fileKind } from '../ui.js?v=5';
+import { compressImage, readDataURL, dataURLtoBlob, fileKind } from '../ui.js?v=6';
 
 const V = '10.12.2';
 const BASE = `https://www.gstatic.com/firebasejs/${V}`;

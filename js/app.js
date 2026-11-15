@@ -1,10 +1,10 @@
 /* Visvet — aplicación (cliente y clínica) */
-import { CONFIG } from './config.js?v=5';
+import { CONFIG } from './config.js?v=6';
 import {
   $, $$, esc, I, SPECIES, speciesGrad, RECORD_TYPES, todayISO, parseISO, fmtDate, fmtDay, fmtTime, fmtMoney, fmtSize,
   timeAgo, chatStamp, daysUntil, ageOf, initials, greeting, haptic, toast, openSheet, closeSheet, anySheetOpen,
   actionSheet, confirmSheet, promptSheet, compressImage, fileKind, icsFor, downloadBlob, confetti, countUp,
-} from './ui.js?v=5';
+} from './ui.js?v=6';
 
 /* =========================================================
  * Estado
@@ -33,7 +33,7 @@ async function boot() {
     return;
   }
   try {
-    const { createFirebaseBackend } = await import('./backend/firebase.js?v=5');
+    const { createFirebaseBackend } = await import('./backend/firebase.js?v=6');
     B = await createFirebaseBackend(CONFIG.firebase);
   } catch (e) {
     console.error(e);

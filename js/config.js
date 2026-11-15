@@ -8,7 +8,14 @@
  * reglas de firestore.rules.
  * ========================================================= */
 export const CONFIG = {
-  firebase: null,
+  firebase: {
+    apiKey: 'AIzaSyCbdpVcvDjiP1-6E20fPac-V4pg1Xy-_14',
+    authDomain: 'visvet-62c75.firebaseapp.com',
+    projectId: 'visvet-62c75',
+    storageBucket: 'visvet-62c75.firebasestorage.app',
+    messagingSenderId: '622533421221',
+    appId: '1:622533421221:web:0f8c17f68f860a19cd454c',
+  },
   /* Ejemplo:
   firebase: {
     apiKey: 'AIza...',
