@@ -2,3 +2,5 @@
 node_modules/
 *.log
 visvet.zip
+firebase-debug.log
+firestore-debug.log

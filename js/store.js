@@ -37,6 +37,7 @@
   });
 
   const Store = {
+    mode: 'local',
     data: empty(),
     listeners: [],
 
@@ -81,6 +82,11 @@
     currentUserId() { try { return localStorage.getItem(SESSION_KEY); } catch (e) { return null; } },
     currentUser() { const id = this.currentUserId(); return id ? this.user(id) : null; },
     setSession(id) { id ? localStorage.setItem(SESSION_KEY, id) : localStorage.removeItem(SESSION_KEY); },
+    logout() { this.setSession(null); },
+    authEmail() { const u = this.currentUser(); return u ? u.email : ''; },
+    // En modo local las fotos van dentro de cada publicación
+    mediaCached() { return null; },
+    loadMedia() { return Promise.resolve(null); },
 
     /* ---------- Usuarios ---------- */
     user(id) { return this.data.users.find((u) => u.id === id) || null; },
@@ -240,6 +246,10 @@
       if (!this.save()) { this.data.stories.pop(); return false; }
       return true;
     },
+    deleteStory(id) {
+      this.data.stories = this.data.stories.filter((s) => s.id !== id);
+      this.save();
+    },
     markStorySeen(storyId, userId) {
       const s = this.data.stories.find((x) => x.id === storyId);
       if (s && !s.seenBy.includes(userId)) { s.seenBy.push(userId); this.save(); }
@@ -266,6 +276,11 @@
       const target = actorId === a.vetId ? a.clientId : a.vetId;
       this.notify(target, 'appointment_' + status, actorId, { appointmentId: id, text: `${a.petName} · ${a.date} ${a.time}` });
       this.save();
+    },
+
+    setAppointmentNote(id, note) {
+      const a = this.data.appointments.find((x) => x.id === id);
+      if (a) { a.vetNote = note; this.save(); }
     },
 
     /* ---------- Mensajes ---------- */
@@ -322,5 +337,6 @@
   };
 
   window.Store = Store;
+  window.LocalStore = Store;
   window.uid = uid;
 })();

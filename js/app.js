@@ -80,6 +80,27 @@
     return `<span class="avatar${ring}" style="--s:${size}px">${inner}</span>`;
   }
 
+  const FB = S.mode === 'firebase';
+
+  // Imágenes: en modo Firebase las fotos se descargan bajo demanda ("media:ID")
+  const BLANK = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
+  function imgSrc(src) {
+    if (typeof src === 'string' && src.startsWith('media:')) {
+      const id = src.slice(6);
+      const cached = S.mediaCached(id);
+      return cached ? `src="${esc(cached)}"` : `src="${BLANK}" data-media="${esc(id)}"`;
+    }
+    return `src="${esc(src)}"`;
+  }
+  function hydrate(root = document) {
+    $$('img[data-media]', root).forEach((img) => {
+      const id = img.dataset.media;
+      img.removeAttribute('data-media');
+      img.classList.add('loading');
+      S.loadMedia(id).then((src) => { if (src) img.src = src; img.classList.remove('loading'); });
+    });
+  }
+
   const badge = (u) => (u && u.role === 'vet' ? I.verified : '');
   const userLink = (u) => `<a href="#/u/${esc(u.username)}" class="ulink">${esc(u.username)}</a>${badge(u)}`;
   const roleLabel = (u) => (u.role === 'vet' ? `Veterinario/a${u.specialty ? ' · ' + esc(u.specialty) : ''}` : 'Dueño/a de mascotas');
@@ -173,6 +194,22 @@
     });
   }
 
+  function inputModal(title, label, type = 'text', value = '') {
+    return new Promise((resolve) => {
+      let answered = false;
+      openModal(`
+        <div class="modal-head"><h3>${esc(title)}</h3></div>
+        <form class="modal-body stack" id="input-form">
+          <label class="field"><span>${esc(label)}</span><input name="v" type="${type}" value="${esc(value)}" required></label>
+          <div class="row-end"><button type="button" class="btn ghost" id="input-cancel">Cancelar</button>
+          <button class="btn primary">Aceptar</button></div>
+        </form>`, { cls: 'small', onClose: () => { if (!answered) resolve(null); } });
+      $('#input-form').v.focus();
+      $('#input-cancel').onclick = () => closeModal();
+      $('#input-form').onsubmit = (e) => { e.preventDefault(); answered = true; const v = e.target.v.value; closeModal(); resolve(v); };
+    });
+  }
+
   /* ======================================================
    * Router
    * ====================================================== */
@@ -217,6 +254,7 @@
     const { html, mount } = normalize(page(route));
     app.innerHTML = Shell(html, route.name);
     if (mount) mount();
+    hydrate();
 
     const key = route.parts.join('/');
     if (key !== lastRoute) { window.scrollTo(0, 0); lastRoute = key; }
@@ -300,17 +338,19 @@
           <h1 class="logo-text big">Visvet</h1>
           <p class="muted center">La red social de los veterinarios y de quienes aman a sus mascotas.</p>
           <form id="login-form" class="stack">
-            <input name="login" placeholder="Usuario o correo electrónico" autocomplete="username" required>
+            <input name="login" ${FB ? 'type="email" placeholder="Correo electrónico"' : 'placeholder="Usuario o correo electrónico"'} autocomplete="username" required>
             <input name="password" type="password" placeholder="Contraseña" autocomplete="current-password" required>
             <button class="btn primary block">Iniciar sesión</button>
             <p class="form-error" id="auth-error"></p>
           </form>
+          ${FB ? `<p class="center"><button type="button" class="link-btn" data-action="forgot">¿Has olvidado tu contraseña?</button></p>` : `
           <div class="divider"><span>o prueba una cuenta demo</span></div>
           <div class="demo-accounts">
             <button class="chip" data-demo="dra.lucia">${I.stethoscope} Veterinaria</button>
             <button class="chip" data-demo="ana.y.toby">${I.paw} Cliente</button>
           </div>
           <p class="tiny muted center">Contraseña de las cuentas demo: <b>demo1234</b></p>
+          <p class="tiny muted center">Modo demo: los datos se guardan solo en este navegador.</p>`}
         </div>
         <div class="card auth-card small-pad center">¿No tienes cuenta? <a href="#/register" class="strong-link">Regístrate</a></div>
       </div>
@@ -411,9 +451,9 @@
         try {
           const u = await S.register(data);
           S.setSession(u.id);
-          // seguir automáticamente a los veterinarios demo para que el inicio no esté vacío
-          S.data.users.filter((x) => x.role === 'vet' && x.id !== u.id).slice(0, 3).forEach((v) => u.following.push(v.id));
-          S.save();
+          // seguir automáticamente a algunos veterinarios para que el inicio no esté vacío
+          const vets = S.data.users.filter((x) => x.role === 'vet' && x.id !== u.id).slice(0, 3).map((v) => v.id);
+          if (vets.length) S.updateUser(u.id, { following: vets });
           location.hash = '#/';
           render();
           toast(`¡Bienvenido/a a Visvet, ${u.name}! 🐾`);
@@ -446,7 +486,7 @@
         <button class="icon-btn" data-action="post-options" data-id="${p.id}" aria-label="Opciones">${I.more}</button>
       </header>
       <div class="post-media" data-action="dbl-like" data-id="${p.id}">
-        <img src="${esc(p.image)}" alt="Publicación de ${esc(author.username)}" loading="lazy">
+        <img ${imgSrc(p.image)} alt="Publicación de ${esc(author.username)}" loading="lazy">
         <span class="big-heart">${I.heartFill}</span>
       </div>
       <div class="post-body">
@@ -491,6 +531,7 @@
       tmp.innerHTML = postCard(p, el.dataset.variant);
       const fresh = tmp.firstElementChild;
       el.replaceWith(fresh);
+      hydrate(fresh);
       if (draft) fresh.querySelector('.comment-form input').value = draft;
     });
   }
@@ -636,10 +677,11 @@
         ${own ? `<span class="muted-light seen-count">👁 ${s.seenBy.filter((x) => x !== me.id).length}</span><button class="icon-btn light" data-action="del-story" data-id="${s.id}" aria-label="Eliminar historia">${I.trash}</button>` : ''}
         <button class="icon-btn light" data-action="close-modal" aria-label="Cerrar">${I.close}</button>
       </div>
-      <img src="${esc(s.image)}" alt="Historia de ${esc(group.user.username)}">
+      <img ${imgSrc(s.image)} alt="Historia de ${esc(group.user.username)}">
       <button class="story-nav prev" data-action="story-prev" aria-label="Anterior"></button>
       <button class="story-nav next" data-action="story-next" aria-label="Siguiente"></button>
       ${!own ? `<form class="story-reply" data-form="story-reply" data-to="${group.user.id}"><input name="text" placeholder="Responder a ${esc(group.user.username)}…" autocomplete="off"><button class="icon-btn light">${I.send}</button></form>` : ''}`;
+    hydrate(el);
     const bar = el.querySelector('.bar i.run');
     if (bar) { bar.style.animationDuration = story.dur + 'ms'; }
     story.timer = setTimeout(nextStory, story.dur);
@@ -682,7 +724,7 @@
 
   function gridItem(p) {
     return `<a href="#/p/${p.id}" class="grid-item">
-      <img src="${esc(p.image)}" alt="" loading="lazy">
+      <img ${imgSrc(p.image)} alt="" loading="lazy">
       <span class="grid-overlay"><span>${I.heartFill} ${p.likes.length}</span><span>${I.comment} ${p.comments.length}</span></span>
       ${p.category === 'adopcion' ? '<span class="grid-tag">🏡</span>' : p.category === 'caso' ? '<span class="grid-tag">🩺</span>' : ''}
     </a>`;
@@ -949,7 +991,8 @@
           </div>
           <form id="profile-form" class="stack">
             <label class="field"><span>Nombre</span><input name="name" value="${esc(me.name)}" required maxlength="60"></label>
-            <label class="field"><span>Correo electrónico</span><input name="email" type="email" value="${esc(me.email)}" maxlength="80"></label>
+            ${FB ? `<div class="field"><span>Correo electrónico</span><small class="muted">${esc(S.authEmail())} · privado, no lo ve nadie más</small></div>`
+              : `<label class="field"><span>Correo electrónico</span><input name="email" type="email" value="${esc(me.email)}" maxlength="80"></label>`}
             <label class="field"><span>Biografía</span><textarea name="bio" rows="3" maxlength="300">${esc(me.bio)}</textarea></label>
             <label class="field"><span>Ciudad</span><input name="city" value="${esc(me.city)}" maxlength="40"></label>
             ${vet ? `
@@ -993,9 +1036,9 @@
 
         <div class="card edit-card danger-zone">
           <h3>Zona de peligro</h3>
-          <p class="muted tiny">Los datos de Visvet se guardan en este navegador.</p>
+          <p class="muted tiny">${FB ? 'Al eliminar tu cuenta se borran tu perfil, tus publicaciones, historias, mensajes enviados y citas.' : 'Modo demo: los datos de Visvet se guardan solo en este navegador.'}</p>
           <div class="row-wrap">
-            <button class="btn ghost" data-action="reset-demo">Restablecer datos de demostración</button>
+            ${FB ? '' : '<button class="btn ghost" data-action="reset-demo">Restablecer datos de demostración</button>'}
             <button class="btn danger" data-action="delete-account">Eliminar mi cuenta</button>
           </div>
         </div>
@@ -1010,7 +1053,8 @@
         $('#profile-form').onsubmit = (e) => {
           e.preventDefault();
           const f = e.target;
-          const patch = { name: f.name.value.trim(), email: f.email.value.trim(), bio: f.bio.value.trim(), city: f.city.value.trim() };
+          const patch = { name: f.name.value.trim(), bio: f.bio.value.trim(), city: f.city.value.trim() };
+          if (f.email) patch.email = f.email.value.trim();
           if (vet) ['clinic', 'specialty', 'license', 'phone', 'schedule'].forEach((k) => (patch[k] = f[k].value.trim()));
           S.updateUser(me.id, patch);
           toast('Perfil actualizado ✅');
@@ -1182,7 +1226,7 @@
                 const sp = m.postId ? S.post(m.postId) : null;
                 return `${showTime ? `<div class="dm-time">${new Date(m.createdAt).toLocaleString('es-ES', { dateStyle: 'medium', timeStyle: 'short' })}</div>` : ''}
                   <div class="bubble-row${mine ? ' mine' : ''}">
-                    ${sp ? `<a href="#/p/${sp.id}" class="shared-post"><img src="${esc(sp.image)}" alt=""><span>${esc(S.user(sp.userId)?.username || '')}</span></a>` : ''}
+                    ${sp ? `<a href="#/p/${sp.id}" class="shared-post"><img ${imgSrc(sp.image)} alt=""><span>${esc(S.user(sp.userId)?.username || '')}</span></a>` : ''}
                     ${m.text ? `<div class="bubble">${richText(m.text)}</div>` : ''}
                   </div>`;
               }).join('')}
@@ -1272,7 +1316,7 @@
               if (!from) return '';
               const p = n.postId ? S.post(n.postId) : null;
               const isAppt = n.type.startsWith('appointment');
-              const right = p ? `<a href="#/p/${p.id}" class="notif-thumb"><img src="${esc(p.image)}" alt=""></a>`
+              const right = p ? `<a href="#/p/${p.id}" class="notif-thumb"><img ${imgSrc(p.image)} alt=""></a>`
                 : n.type === 'follow' && !me.following.includes(from.id) ? `<button class="btn primary sm" data-action="follow" data-id="${from.id}">Seguir</button>`
                 : isAppt ? `<a href="#/appointments" class="btn ghost sm">Ver</a>` : '';
               return `<div class="notif${n.read ? '' : ' unread'}">
@@ -1313,7 +1357,7 @@
     back: () => (history.length > 1 ? history.back() : go('#/')),
     logout: async () => {
       if (await confirmModal('¿Cerrar sesión?', '', 'Cerrar sesión')) {
-        S.setSession(null); location.hash = '#/login'; render();
+        await S.logout(); location.hash = '#/login'; render();
       }
     },
     like: (el) => { S.toggleLike(el.dataset.id, me.id); refreshPost(el.dataset.id); },
@@ -1389,8 +1433,7 @@
     'del-story': async (el) => {
       clearTimeout(story.timer);
       const id = el.dataset.id;
-      S.data.stories = S.data.stories.filter((s) => s.id !== id);
-      S.save();
+      S.deleteStory(id);
       closeModal();
       toast('Historia eliminada');
     },
@@ -1413,7 +1456,7 @@
     'appt-note': async (el) => {
       const a = S.data.appointments.find((x) => x.id === el.dataset.id);
       const note = await promptModal('Nota para el cliente', 'Indicaciones, preparación o resultado de la consulta', a.vetNote || 'Ej.: venid en ayunas');
-      if (note !== null) { a.vetNote = note; S.save(); render(); toast('Nota guardada'); }
+      if (note !== null) { S.setAppointmentNote(a.id, note); render(); toast('Nota guardada'); }
     },
     'new-dm': () => pickUserModal('Nuevo mensaje', (u) => { closeModal(); go('#/messages/' + u.username); }),
     'del-pet': async (el) => {
@@ -1430,9 +1473,23 @@
       }
     },
     'delete-account': async () => {
-      if (await confirmModal('¿Eliminar tu cuenta?', 'Se borrarán tu perfil, publicaciones, mensajes y citas. No se puede deshacer.', 'Eliminar cuenta', true)) {
-        S.deleteUser(me.id); location.hash = '#/login'; render(); toast('Cuenta eliminada');
+      if (!(await confirmModal('¿Eliminar tu cuenta?', 'Se borrarán tu perfil, publicaciones, mensajes y citas. No se puede deshacer.', 'Eliminar cuenta', true))) return;
+      let password;
+      if (FB) {
+        password = await inputModal('Confirma tu contraseña', 'Contraseña', 'password');
+        if (!password) return;
       }
+      try {
+        await S.deleteUser(me.id, password);
+        location.hash = '#/login'; render(); toast('Cuenta eliminada');
+      } catch (e) { toast(e.message, 'error'); }
+    },
+    forgot: async () => {
+      const lf = $('#login-form');
+      const email = await inputModal('Recuperar contraseña', 'Te enviaremos un correo para crear una nueva contraseña.', 'email', lf ? lf.login.value : '');
+      if (!email) return;
+      try { await S.resetPassword(email); toast('Te hemos enviado un correo para restablecer la contraseña 📧'); }
+      catch (e) { toast(e.message, 'error'); }
     },
   };
 
