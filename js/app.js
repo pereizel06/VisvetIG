@@ -349,14 +349,14 @@
       <aside class="auth-aside">
         <div class="auth-aside-in">
           <span class="logo-text light">Visvet</span>
-          <h2 class="auth-claim">La consulta,<br>abierta.</h2>
+          <h2 class="auth-claim">La consulta,<br><em>abierta.</em></h2>
           <p class="auth-lead">Donde los veterinarios comparten lo que saben y las familias cuidan mejor a sus animales.</p>
           <ul class="auth-points">
             <li><span class="mono">01</span><span><b>Consejos y casos clínicos</b> firmados por profesionales colegiados.</span></li>
             <li><span class="mono">02</span><span><b>Agenda de citas</b>: el cliente solicita, el veterinario confirma.</span></li>
             <li><span class="mono">03</span><span><b>Mensajes directos</b> entre la clínica y cada familia.</span></li>
           </ul>
-          <p class="auth-foot mono">HISTORIA CLÍNICA · COMUNIDAD · CITAS</p>
+          <p class="auth-foot mono">VISVET · RED VETERINARIA · v2.0</p>
         </div>
       </aside>`;
   }

@@ -4,19 +4,19 @@
  * Todas las cuentas demo usan la contraseña: demo1234
  */
 (function () {
-  // Carteles tipográficos para las publicaciones de ejemplo (sin degradados ni emojis)
+  // Carteles de ejemplo con estilo «monitor clínico»: rejilla, esfera de luz y marcas HUD
   const TONES = [
-    { bg:'#1B2A24', fg:'#ECEBE3', mark:'#E0662B' }, // tinta
-    { bg:'#E6E4DA', fg:'#1B2A24', mark:'#C9562A' }, // hueso
-    { bg:'#3D5A4C', fg:'#F1F0E8', mark:'#F2B36B' }, // musgo
-    { bg:'#C9562A', fg:'#FBF6EE', mark:'#1B2A24' }, // yodo
-    { bg:'#2E3B44', fg:'#E9ECEA', mark:'#E0662B' }, // pizarra
+    { bg: '#06080b', glow: '#3ef0c8', fg: '#eef2f6', kick: '#3ef0c8' }, // menta
+    { bg: '#070a12', glow: '#5b8cff', fg: '#eef2f6', kick: '#8fb0ff' }, // azul
+    { bg: '#0b0807', glow: '#ff8a3d', fg: '#f6efe9', kick: '#ffb184' }, // ámbar
+    { bg: '#09070f', glow: '#9b7bff', fg: '#f0edf8', kick: '#c3b1ff' }, // violeta
+    { bg: '#edf1f4', glow: '#19d3ae', fg: '#0a0e13', kick: '#00806a' }, // claro
   ];
   let counter = 0;
-  const xml = (t) => String(t).replace(/&/g,'&amp;').replace(/</g,'&lt;');
+  const xml = (t) => String(t).replace(/&/g, '&amp;').replace(/</g, '&lt;');
   function wrap(text, max) {
     const lines = [];
-    let cur ='';
+    let cur = '';
     String(text).split(/\s+/).forEach((w) => {
       if ((cur + ' ' + w).trim().length > max && cur) { lines.push(cur); cur = w; } else cur = (cur + ' ' + w).trim();
     });
@@ -28,18 +28,30 @@
     let h = 0;
     for (const ch of String(c1) + label) h = (h * 31 + ch.charCodeAt(0)) % 997;
     const t = TONES[h % TONES.length];
-    const lines = wrap(label ||'Visvet', 14).slice(0, 4);
-    const size = lines.length > 3 ? 62 : 72;
-    const y0 = 560 - (lines.length - 1) * (size * 1.02);
+    const id = 'p' + counter;
+    const lines = wrap(label || 'Visvet', 15).slice(0, 4);
+    const size = lines.length > 3 ? 54 : 62;
+    const y0 = 548 - (lines.length - 1) * size * 1.05;
+    const ox = 380 + (h % 5) * 18, oy = 190 + (h % 7) * 10;
+    const corner = (x, y, dx, dy) => `<path d="M${x} ${y + dy * 22}V${y}H${x + dx * 22}" fill="none" stroke="${t.fg}" stroke-opacity=".45" stroke-width="2"/>`;
     const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 600">
+      <defs>
+        <radialGradient id="${id}g" cx="${ox / 600}" cy="${oy / 600}" r=".55"><stop offset="0" stop-color="${t.glow}" stop-opacity=".55"/><stop offset="1" stop-color="${t.glow}" stop-opacity="0"/></radialGradient>
+        <radialGradient id="${id}o" cx=".36" cy=".34" r=".7"><stop offset="0" stop-color="#ffffff"/><stop offset=".28" stop-color="${t.glow}"/><stop offset="1" stop-color="${t.bg}"/></radialGradient>
+        <pattern id="${id}p" width="40" height="40" patternUnits="userSpaceOnUse"><path d="M40 0H0V40" fill="none" stroke="${t.fg}" stroke-opacity=".07" stroke-width="1"/></pattern>
+      </defs>
       <rect width="600" height="600" fill="${t.bg}"/>
-      <g fill="${t.fg}" opacity=".07"><rect x="380" y="-40" width="90" height="330"/><rect x="260" y="80" width="330" height="90"/></g>
-      <text x="40" y="104" font-family="ui-monospace, Menlo, Consolas, monospace" font-size="17" letter-spacing="3" fill="${t.fg}" opacity=".75">VISVET — Nº ${String(counter).padStart(2,'0')}</text>
-      <g fill="${t.mark}"><rect x="537" y="82" width="8" height="24"/><rect x="529" y="90" width="24" height="8"/></g>
-      <line x1="40" x2="560" y1="${y0 - size - 14}" y2="${y0 - size - 14}" stroke="${t.fg}" stroke-opacity=".35" stroke-width="1.5"/>
-      ${lines.map((l, i) => `<text x="38" y="${y0 + i * size * 1.02 - 20}" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-weight="800" font-size="${size}" letter-spacing="-2.5" fill="${t.fg}">${xml(l)}</text>`).join('')}
+      <rect width="600" height="600" fill="url(#${id}p)"/>
+      <rect width="600" height="600" fill="url(#${id}g)"/>
+      <circle cx="${ox}" cy="${oy}" r="150" fill="none" stroke="${t.glow}" stroke-opacity=".22"/>
+      <circle cx="${ox}" cy="${oy}" r="210" fill="none" stroke="${t.glow}" stroke-opacity=".1"/>
+      <circle cx="${ox}" cy="${oy}" r="86" fill="url(#${id}o)"/>
+      ${corner(30, 30, 1, 1)}${corner(570, 30, -1, 1)}${corner(30, 570, 1, -1)}${corner(570, 570, -1, -1)}
+      <text x="52" y="66" font-family="ui-monospace, Menlo, Consolas, monospace" font-size="15" letter-spacing="3" fill="${t.kick}">VSV-${String(counter).padStart(3, '0')} · VISVET</text>
+      <circle cx="${ox}" cy="${oy}" r="4" fill="#fff"/>
+      ${lines.map((l, i) => `<text x="50" y="${y0 + i * size * 1.05 - 18}" font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-weight="700" font-size="${size}" letter-spacing="-2.2" fill="${t.fg}">${xml(l)}</text>`).join('')}
     </svg>`;
-    return'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
+    return 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
   }
 
   // Los usuarios de ejemplo usan iniciales (avatar vacío)
