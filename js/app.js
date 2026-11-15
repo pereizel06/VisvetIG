@@ -65,10 +65,21 @@
       .replace(/\n/g, '<br>');
   }
 
-  function colorFor(id) {
+  const TONES = ['tone-a', 'tone-b', 'tone-c', 'tone-d', 'tone-e'];
+  function toneFor(id) {
     let h = 0;
-    for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) % 360;
-    return `hsl(${h} 60% 50%)`;
+    for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) % 997;
+    return TONES[h % TONES.length];
+  }
+
+  // Iniciales sin títulos («Dra. Lucía Fernández» → «LF»)
+  function initials(user) {
+    const words = String(user.name || user.username).trim().split(/\s+/)
+      .filter((w) => !/^(dr|dra|dña|don|sr|sra)\.?$/i.test(w));
+    if (!words.length) return (user.username || '?').charAt(0).toUpperCase();
+    const first = words[0].charAt(0);
+    const last = words.length > 1 ? words[words.length - 1].charAt(0) : '';
+    return (first + last).toUpperCase();
   }
 
   function avatar(user, size = 32, opts = {}) {
@@ -76,7 +87,7 @@
     const ring = opts.ring ? ` ring${opts.seen ? ' seen' : ''}` : '';
     const inner = user.avatar
       ? `<img src="${esc(user.avatar)}" alt="" loading="lazy">`
-      : `<span class="initials" style="background:${colorFor(user.id)};font-size:${Math.round(size * 0.4)}px">${esc((user.name || user.username).trim().charAt(0).toUpperCase())}</span>`;
+      : `<span class="initials ${toneFor(user.id)}">${esc(initials(user))}</span>`;
     return `<span class="avatar${ring}" style="--s:${size}px">${inner}</span>`;
   }
 
@@ -107,9 +118,10 @@
 
   /* ---------- Avisos ---------- */
   let toastTimer;
+  const EMOJI = /[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{2B00}-\u{2BFF}\u{FE0F}\u{200D}]/gu;
   function toast(msg, type = '') {
     const el = $('#toast');
-    el.textContent = msg;
+    el.textContent = String(msg).replace(EMOJI, '').replace(/\s{2,}/g, ' ').trim();
     el.className = 'show ' + type;
     clearTimeout(toastTimer);
     toastTimer = setTimeout(() => (el.className = ''), 3200);
@@ -333,17 +345,20 @@
    * Login / Registro
    * ====================================================== */
   function authAside() {
-    const A = window.VisvetArt;
     return `
-      <div class="auth-aside">
-        <div class="phone">
-          <div class="phone-screen">
-            <img src="${A.art('🐶', '#0f9d8a', '#7fd34e', 'Comparte')}" alt="">
-            <img src="${A.art('🐱', '#8b5cf6', '#ec4899', 'Aprende')}" alt="">
-            <img src="${A.art('🩺', '#2563eb', '#22d3ee', 'Pide cita')}" alt="">
-          </div>
+      <aside class="auth-aside">
+        <div class="auth-aside-in">
+          <span class="logo-text light">Visvet</span>
+          <h2 class="auth-claim">La consulta,<br>abierta.</h2>
+          <p class="auth-lead">Donde los veterinarios comparten lo que saben y las familias cuidan mejor a sus animales.</p>
+          <ul class="auth-points">
+            <li><span class="mono">01</span><span><b>Consejos y casos clínicos</b> firmados por profesionales colegiados.</span></li>
+            <li><span class="mono">02</span><span><b>Agenda de citas</b>: el cliente solicita, el veterinario confirma.</span></li>
+            <li><span class="mono">03</span><span><b>Mensajes directos</b> entre la clínica y cada familia.</span></li>
+          </ul>
+          <p class="auth-foot mono">HISTORIA CLÍNICA · COMUNIDAD · CITAS</p>
         </div>
-      </div>`;
+      </aside>`;
   }
 
   function LoginPage() {
@@ -499,7 +514,7 @@
           <div>${userLink(author)} <span class="muted dot-sep">• ${timeAgo(p.createdAt)}</span></div>
           <small class="muted">${author.role === 'vet' ? esc(author.clinic || roleLabel(author)) : esc(author.city || '')}</small>
         </div>
-        ${cat ? `<span class="cat-chip cat-${p.category}">${cat.emoji} ${cat.label}</span>` : ''}
+        ${cat ? `<span class="cat-chip cat-${p.category}"><i class="dot"></i>${cat.label}</span>` : ''}
         <button class="icon-btn" data-action="post-options" data-id="${p.id}" aria-label="Opciones">${I.more}</button>
       </header>
       <div class="post-media" data-action="dbl-like" data-id="${p.id}">
@@ -743,7 +758,7 @@
     return `<a href="#/p/${p.id}" class="grid-item">
       <img ${imgSrc(p.image)} alt="" loading="lazy">
       <span class="grid-overlay"><span>${I.heartFill} ${p.likes.length}</span><span>${I.comment} ${p.comments.length}</span></span>
-      ${p.category === 'adopcion' ? '<span class="grid-tag">🏡</span>' : p.category === 'caso' ? '<span class="grid-tag">🩺</span>' : ''}
+      ${['adopcion', 'caso', 'aviso'].includes(p.category) ? `<span class="grid-tag cat-${p.category}">${CATEGORIES[p.category].label.split(' ')[0]}</span>` : ''}
     </a>`;
   }
 
@@ -770,7 +785,7 @@
       body = `
         <div class="chips-row">
           <a href="#/explore?${new URLSearchParams({ ...params, cat: 'all' })}" class="chip${cat === 'all' ? ' active' : ''}">Todo</a>
-          ${Object.entries(CATEGORIES).map(([k, c]) => `<a href="#/explore?${new URLSearchParams({ ...params, cat: k })}" class="chip${cat === k ? ' active' : ''}">${c.emoji} ${c.label}</a>`).join('')}
+          ${Object.entries(CATEGORIES).map(([k, c]) => `<a href="#/explore?${new URLSearchParams({ ...params, cat: k })}" class="chip${cat === k ? ' active' : ''}"><i class="dot cat-${k}"></i>${c.label}</a>`).join('')}
         </div>
         ${posts.length ? `<div class="grid">${posts.map(gridItem).join('')}</div>` : `<p class="empty">No hay publicaciones${q ? ` para «${esc(q)}»` : ''}.</p>`}`;
     } else {
@@ -823,7 +838,7 @@
         <div>${userLink(u)}</div>
         <small class="muted">${esc(u.name)}${u.role === 'vet' ? ` · ${esc(u.specialty || '')}` : ''}</small>
         ${u.role === 'vet' && (u.clinic || u.city) ? `<small class="muted block">${I.location} ${esc([u.clinic, u.city].filter(Boolean).join(', '))}</small>` : ''}
-        ${u.role === 'client' && u.pets && u.pets.length ? `<small class="muted block">${u.pets.map((p) => (SPECIES_EMOJI[p.species] || '🐾') + ' ' + esc(p.name)).join(' · ')}</small>` : ''}
+        ${u.role === 'client' && u.pets && u.pets.length ? `<small class="muted block">${u.pets.map((p) => esc(p.name) + ' <span class="mono-s">' + esc(p.species) + '</span>').join(' · ')}</small>` : ''}
       </div>
       ${showFollow && u.id !== me.id ? `<button class="btn ${following ? 'ghost' : 'primary'} sm" data-action="follow" data-id="${u.id}">${following ? 'Siguiendo' : 'Seguir'}</button>` : ''}
     </div>`;
@@ -858,7 +873,7 @@
                 <div class="chips-row wrap">
                   ${Object.entries(CATEGORIES).map(([k, c]) => {
                     const disabled = c.vetOnly && !vet;
-                    return `<button type="button" class="chip${draft.category === k ? ' active' : ''}" data-action="pick-cat" data-cat="${k}" ${disabled ? 'disabled title="Solo para veterinarios"' : ''}>${c.emoji} ${c.label}</button>`;
+                    return `<button type="button" class="chip${draft.category === k ? ' active' : ''}" data-action="pick-cat" data-cat="${k}" ${disabled ? 'disabled title="Solo para veterinarios"' : ''}><i class="dot cat-${k}"></i>${c.label}</button>`;
                   }).join('')}
                 </div>
                 ${!vet ? '<small class="muted">«Consejo veterinario» y «Caso clínico» están reservados a profesionales verificados.</small>' : ''}
@@ -936,7 +951,7 @@
     } else if (profileTab === 'pets') {
       tabBody = (u.pets || []).length ? `<div class="pets-grid">${u.pets.map((p) => `
         <div class="pet-card card">
-          <span class="pet-emoji">${SPECIES_EMOJI[p.species] || '🐾'}</span>
+          <span class="pet-emoji">${esc(p.name.charAt(0).toUpperCase())}</span>
           <b>${esc(p.name)}</b>
           <small class="muted">${esc([p.species, p.breed, p.age].filter(Boolean).join(' · '))}</small>
         </div>`).join('')}</div>`
@@ -979,7 +994,7 @@
             <span class="role-tag ${u.role}">${u.role === 'vet' ? I.stethoscope : I.paw} ${roleLabel(u)}</span>
             ${u.role === 'vet' && u.clinic ? `<div class="muted">${esc(u.clinic)}${u.city ? ' · ' + esc(u.city) : ''}</div>` : u.city ? `<div class="muted">${I.location} ${esc(u.city)}</div>` : ''}
             ${u.bio ? `<p>${richText(u.bio)}</p>` : ''}
-            ${u.role === 'client' && (u.pets || []).length ? `<div class="pet-chips">${u.pets.map((p) => `<span class="chip static">${SPECIES_EMOJI[p.species] || '🐾'} ${esc(p.name)}</span>`).join('')}</div>` : ''}
+            ${u.role === 'client' && (u.pets || []).length ? `<div class="pet-chips">${u.pets.map((p) => `<span class="chip static">${esc(p.name)} <span class="mono-s">${esc(p.species)}</span></span>`).join('')}</div>` : ''}
             ${followsMe && !own ? '<small class="muted">Te sigue</small>' : ''}
           </div>
         </div>
@@ -1029,7 +1044,7 @@
           <h3>${I.paw} Mis mascotas</h3>
           <div class="pets-list">
             ${(me.pets || []).map((p, i) => `
-              <div class="pet-row"><span class="pet-emoji sm">${SPECIES_EMOJI[p.species] || '🐾'}</span>
+              <div class="pet-row"><span class="pet-emoji sm">${esc(p.name.charAt(0).toUpperCase())}</span>
                 <div class="grow"><b>${esc(p.name)}</b><br><small class="muted">${esc([p.species, p.breed, p.age].filter(Boolean).join(' · '))}</small></div>
                 <button class="icon-btn" data-action="del-pet" data-i="${i}" aria-label="Eliminar">${I.trash}</button></div>`).join('') || '<p class="muted">Aún no has añadido mascotas.</p>'}
           </div>
@@ -1147,7 +1162,7 @@
           <span class="status ${st.cls}">${st.label}</span>
           <small class="muted">${fmtDate(a.date)} · ${esc(a.time)}</small>
         </div>
-        <h4>${esc(a.petName)} <small class="muted">${a.species ? (SPECIES_EMOJI[a.species] || '') + ' ' + esc(a.species) : ''}</small></h4>
+        <h4>${esc(a.petName)} <small class="muted">${a.species ? esc(a.species) : ''}</small></h4>
         <p>${esc(a.reason)}</p>
         ${other ? `<div class="appt-who">${avatar(other, 24)} ${userLink(other)} <small class="muted">${vet ? 'Cliente' : esc(other.clinic || 'Veterinario/a')}</small></div>` : ''}
         ${a.vetNote ? `<div class="vet-note">${I.stethoscope} <span><b>Nota del veterinario:</b> ${esc(a.vetNote)}</span></div>` : ''}
@@ -1176,7 +1191,7 @@
             ${vets.map((v) => `<option value="${v.id}"${v.id === vetId ? ' selected' : ''}>${esc(v.name)} — ${esc(v.clinic || v.specialty || '')}${v.city ? ' (' + esc(v.city) + ')' : ''}</option>`).join('')}
           </select></label>
         <label class="field"><span>Mascota</span>
-          ${pets.length ? `<select name="pet">${pets.map((p, i) => `<option value="${i}">${SPECIES_EMOJI[p.species] || '🐾'} ${esc(p.name)} (${esc(p.species)})</option>`).join('')}<option value="other">Otra mascota…</option></select>` : ''}
+          ${pets.length ? `<select name="pet">${pets.map((p, i) => `<option value="${i}">${esc(p.name)} (${esc(p.species)})</option>`).join('')}<option value="other">Otra mascota…</option></select>` : ''}
           <input name="petName" placeholder="Nombre de la mascota" ${pets.length ? 'hidden' : 'required'} maxlength="30">
         </label>
         <div class="grid-2">
