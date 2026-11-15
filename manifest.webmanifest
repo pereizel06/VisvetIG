@@ -1,0 +1,17 @@
+{
+  "name": "Visvet",
+  "short_name": "Visvet",
+  "description": "La app de tu clínica veterinaria: cartilla, chat, citas y facturas.",
+  "lang": "es",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#04060b",
+  "theme_color": "#04060b",
+  "icons": [
+    { "src": "assets/icons/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "assets/icons/icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "assets/icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}

@@ -1,1622 +1,1289 @@
-/* Visvet — aplicación principal (SPA con rutas por hash, apta para GitHub Pages) */
-(function () {
-  'use strict';
+/* Visvet — aplicación (cliente y clínica) */
+import { CONFIG } from './config.js';
+import {
+  $, $$, esc, I, SPECIES, speciesGrad, RECORD_TYPES, todayISO, parseISO, fmtDate, fmtDay, fmtTime, fmtMoney, fmtSize,
+  timeAgo, chatStamp, daysUntil, ageOf, initials, greeting, haptic, toast, openSheet, closeSheet, anySheetOpen,
+  actionSheet, confirmSheet, promptSheet, compressImage, fileKind, icsFor, downloadBlob, confetti, countUp,
+} from './ui.js';
 
-  /* ======================================================
-   * Utilidades
-   * ====================================================== */
-  const $ = (sel, root = document) => root.querySelector(sel);
-  const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
-  const I = window.Icons;
-  const S = window.Store;
+/* =========================================================
+ * Estado
+ * ========================================================= */
+let B = null;
+const S = { user: null, profile: null, pets: [], appts: [], users: [], clinic: {}, recs: {}, msgs: {}, loaded: false };
+const ui = { petTab: 'cartilla', recFilter: 'all', apptTab: 'up', agendaDay: todayISO(), authTab: 'login', q: '', chatFiles: [], sending: false };
+let subs = [];
+const recSubs = new Map();
+let msgSub = null, msgPetId = null;
+let lastRoute = '';
+const seen = { unread: {}, recs: {}, appts: {} };
 
-  const esc = (str) => String(str == null ? '' : str)
-    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+const isAdmin = () => !!(S.user && S.user.isAdmin);
+const petById = (id) => S.pets.find((p) => p.id === id);
+const userById = (id) => (S.profile && S.profile.id === id ? S.profile : S.users.find((u) => u.id === id));
+const ownerName = (pet) => (userById(pet.ownerId) || {}).name || 'Cliente';
+const clinicName = () => S.clinic.name || CONFIG.clinicName || 'Visvet';
 
-  const CATEGORIES = {
-    consejo: { label: 'Consejo veterinario', emoji: '💡', vetOnly: true },
-    caso: { label: 'Caso clínico', emoji: '🩺', vetOnly: true },
-    mascota: { label: 'Mi mascota', emoji: '🐾' },
-    adopcion: { label: 'Adopción', emoji: '🏡' },
-    aviso: { label: 'Aviso / Urgencia', emoji: '🚨' },
-    antesdespues: { label: 'Antes y después', emoji: '✨' },
-  };
-
-  const SPECIALTIES = [
-    'Medicina general', 'Medicina felina', 'Cirugía y traumatología', 'Animales exóticos',
-    'Dermatología', 'Cardiología', 'Odontología', 'Oftalmología', 'Oncología',
-    'Etología (comportamiento)', 'Nutrición', 'Urgencias', 'Équidos', 'Animales de granja',
-  ];
-  const SPECIES = ['Perro', 'Gato', 'Conejo', 'Ave', 'Hurón', 'Reptil', 'Roedor', 'Caballo', 'Pez', 'Otro'];
-  const SPECIES_EMOJI = { Perro: '🐶', Gato: '🐱', Conejo: '🐰', Ave: '🦜', Hurón: '🦦', Reptil: '🦎', Roedor: '🐹', Caballo: '🐴', Pez: '🐟', Otro: '🐾' };
-
-  const STATUS = {
-    pendiente: { label: 'Pendiente', cls: 'st-pending' },
-    confirmada: { label: 'Confirmada', cls: 'st-ok' },
-    completada: { label: 'Completada', cls: 'st-done' },
-    rechazada: { label: 'Rechazada', cls: 'st-ko' },
-    cancelada: { label: 'Cancelada', cls: 'st-ko' },
-  };
-
-  function timeAgo(ts) {
-    const diff = (Date.now() - ts) / 1000;
-    if (diff < 60) return 'ahora';
-    if (diff < 3600) return `hace ${Math.floor(diff / 60)} min`;
-    if (diff < 86400) return `hace ${Math.floor(diff / 3600)} h`;
-    if (diff < 7 * 86400) return `hace ${Math.floor(diff / 86400)} d`;
-    return new Date(ts).toLocaleDateString('es-ES', { day: 'numeric', month: 'short', year: 'numeric' });
-  }
-  const fmtDate = (d) => {
-    const [y, m, day] = d.split('-').map(Number);
-    return new Date(y, m - 1, day).toLocaleDateString('es-ES', { weekday: 'short', day: 'numeric', month: 'short' });
-  };
-  const today = () => {
-    const d = new Date();
-    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-  };
-  const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
-
-  // Texto con @menciones y #hashtags enlazados
-  function richText(text) {
-    return esc(text)
-      .replace(/@([a-z0-9._]{3,30})/gi, (m, u) => (S.userByUsername(u) ? `<a href="#/u/${u.toLowerCase()}" class="mention">@${u}</a>` : m))
-      .replace(/(^|\s)#([\wáéíóúñü]+)/gi, (m, sp, tag) => `${sp}<a href="#/explore?q=${encodeURIComponent('#' + tag)}" class="hashtag">#${tag}</a>`)
-      .replace(/\n/g, '<br>');
-  }
-
-  const TONES = ['tone-a', 'tone-b', 'tone-c', 'tone-d', 'tone-e'];
-  function toneFor(id) {
-    let h = 0;
-    for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) % 997;
-    return TONES[h % TONES.length];
-  }
-
-  // Iniciales sin títulos («Dra. Lucía Fernández» → «LF»)
-  function initials(user) {
-    const words = String(user.name || user.username).trim().split(/\s+/)
-      .filter((w) => !/^(dr|dra|dña|don|sr|sra)\.?$/i.test(w));
-    if (!words.length) return (user.username || '?').charAt(0).toUpperCase();
-    const first = words[0].charAt(0);
-    const last = words.length > 1 ? words[words.length - 1].charAt(0) : '';
-    return (first + last).toUpperCase();
-  }
-
-  function avatar(user, size = 32, opts = {}) {
-    if (!user) return '';
-    const ring = opts.ring ? ` ring${opts.seen ? ' seen' : ''}` : '';
-    const inner = user.avatar
-      ? `<img src="${esc(user.avatar)}" alt="" loading="lazy">`
-      : `<span class="initials ${toneFor(user.id)}">${esc(initials(user))}</span>`;
-    return `<span class="avatar${ring}" style="--s:${size}px">${inner}</span>`;
-  }
-
-  const FB = S.mode === 'firebase';
-
-  // Imágenes: en modo Firebase las fotos se descargan bajo demanda ("media:ID")
-  const BLANK = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
-  function imgSrc(src) {
-    if (typeof src === 'string' && src.startsWith('media:')) {
-      const id = src.slice(6);
-      const cached = S.mediaCached(id);
-      return cached ? `src="${esc(cached)}"` : `src="${BLANK}" data-media="${esc(id)}"`;
+/* =========================================================
+ * Arranque
+ * ========================================================= */
+async function boot() {
+  try {
+    if (CONFIG.firebase && CONFIG.firebase.apiKey) {
+      const { createFirebaseBackend } = await import('./backend/firebase.js');
+      B = await createFirebaseBackend(CONFIG.firebase, CONFIG.adminEmail);
+    } else {
+      const { createLocalBackend } = await import('./backend/local.js');
+      B = createLocalBackend();
     }
-    return `src="${esc(src)}"`;
+  } catch (e) {
+    console.error(e);
+    $('#view').innerHTML = `<div class="center-screen"><div class="glass card pad"><h2>No se pudo conectar</h2><p class="muted">Revisa tu conexión a internet y la configuración de Firebase.</p></div></div>`;
+    return;
   }
-  function hydrate(root = document) {
-    $$('img[data-media]', root).forEach((img) => {
-      const id = img.dataset.media;
-      img.removeAttribute('data-media');
-      img.classList.add('loading');
-      S.loadMedia(id).then((src) => { if (src) img.src = src; img.classList.remove('loading'); });
+  window.VISVET = B;
+  window.addEventListener('backend-error', (e) => toast(e.detail, 'error'));
+  await B.init(onAuth);
+  window.addEventListener('hashchange', () => navigate());
+  if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});
+}
+
+function onAuth(user) {
+  subs.forEach((u) => u()); subs = [];
+  recSubs.forEach((u) => u()); recSubs.clear();
+  if (msgSub) { msgSub(); msgSub = null; msgPetId = null; }
+  Object.assign(S, { user, profile: null, pets: [], appts: [], users: [], clinic: {}, recs: {}, msgs: {}, loaded: false });
+  seen.unread = {}; seen.recs = {}; seen.appts = {};
+  if (user && (!user.wantsAdmin || user.isAdmin)) {
+    let pending = 3;
+    const ready = () => { if (--pending === 0) { S.loaded = true; schedule(); } };
+    const once = (fn) => { let done = false; return (v) => { fn(v); if (!done) { done = true; ready(); } }; };
+    subs.push(B.watchProfile(user.uid, (p) => { S.profile = p; schedule(); }));
+    subs.push(B.watchClinic((c) => { S.clinic = c || {}; schedule(); }));
+    subs.push(B.watchPets(once((pets) => { onPets(pets); })));
+    subs.push(B.watchAppointments(once((a) => { onAppts(a); })));
+    if (user.isAdmin) subs.push(B.watchUsers(once((u) => { S.users = u; schedule(); })));
+    else ready();
+  }
+  navigate(true);
+}
+
+function onPets(pets) {
+  // avisos de mensajes nuevos
+  pets.forEach((p) => {
+    const k = isAdmin() ? 'unreadAdmin' : 'unreadOwner';
+    const prev = seen.unread[p.id];
+    const viewing = route().name === 'chat' && route().id === p.id && document.visibilityState === 'visible';
+    if (prev !== undefined && (p[k] || 0) > prev && !viewing) {
+      toast(isAdmin() ? `${ownerName(p)} · ${p.name}: ${p.lastMessage || 'nuevo mensaje'}` : `${clinicName()} sobre ${p.name}: ${p.lastMessage || 'nuevo mensaje'}`, 'chat');
+    }
+    seen.unread[p.id] = p[k] || 0;
+  });
+  S.pets = pets.sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
+  // el cliente sigue la cartilla de todos sus animales (para avisos y vacunas)
+  if (!isAdmin()) S.pets.forEach((p) => ensureRecords(p.id));
+  schedule();
+}
+
+function onAppts(list) {
+  if (!isAdmin()) {
+    list.forEach((a) => {
+      const prev = seen.appts[a.id];
+      if (prev && prev !== a.status && a.status === 'confirmada') { toast(`Cita confirmada: ${fmtDate(a.date, { day: 'numeric', month: 'short' })} a las ${a.time}`); confetti(); }
+      if (prev && prev !== a.status && a.status === 'rechazada') toast('La clínica no puede atenderte en esa hora. Escríbenos por chat.', 'error');
+      seen.appts[a.id] = a.status;
+    });
+  } else {
+    list.forEach((a) => {
+      if (S.loaded && !seen.appts[a.id] && a.status === 'pendiente') toast(`Nueva solicitud de cita · ${(petById(a.petId) || {}).name || ''}`, 'chat');
+      seen.appts[a.id] = a.status;
     });
   }
+  S.appts = list.sort((a, b) => (a.date + a.time).localeCompare(b.date + b.time));
+  schedule();
+}
 
-  const badge = (u) => (u && u.role === 'vet' ? I.verified : '');
-  const userLink = (u) => `<a href="#/u/${esc(u.username)}" class="ulink">${esc(u.username)}</a>${badge(u)}`;
-  const roleLabel = (u) => (u.role === 'vet' ? `Veterinario/a${u.specialty ? ' · ' + esc(u.specialty) : ''}` : 'Dueño/a de mascotas');
+function ensureRecords(petId) {
+  if (recSubs.has(petId)) return;
+  recSubs.set(petId, B.watchRecords(petId, (list) => {
+    const prev = seen.recs[petId];
+    if (prev !== undefined && list.length > prev && !isAdmin()) {
+      const r = list.find((x) => Date.now() - (x.createdAt || 0) < 60000) || list[0];
+      const p = petById(petId);
+      if (r && p) toast(`Nuevo en la cartilla de ${p.name}: ${RECORD_TYPES[r.type]?.label || 'documento'}`);
+    }
+    seen.recs[petId] = list.length;
+    S.recs[petId] = list;
+    schedule();
+  }));
+}
 
-  /* ---------- Avisos ---------- */
-  let toastTimer;
-  const EMOJI = /[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{2B00}-\u{2BFF}\u{FE0F}\u{200D}]/gu;
-  function toast(msg, type = '') {
-    const el = $('#toast');
-    el.textContent = String(msg).replace(EMOJI, '').replace(/\s{2,}/g, ' ').trim();
-    el.className = 'show ' + type;
-    clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => (el.className = ''), 3200);
-  }
-  window.toast = toast;
+function watchChat(petId) {
+  if (msgPetId === petId) return;
+  if (msgSub) msgSub();
+  msgPetId = petId;
+  msgSub = B.watchMessages(petId, (list) => {
+    const before = (S.msgs[petId] || []).length;
+    S.msgs[petId] = list;
+    schedule({ chatNew: list.length > before });
+  });
+}
 
-  /* ---------- Imágenes: redimensionar y comprimir ---------- */
-  function readImage(file, max = 1080, quality = 0.82) {
-    return new Promise((resolve, reject) => {
-      if (!file || !file.type.startsWith('image/')) return reject(new Error('El archivo no es una imagen.'));
-      const reader = new FileReader();
-      reader.onerror = () => reject(new Error('No se pudo leer la imagen.'));
-      reader.onload = () => {
-        const img = new Image();
-        img.onerror = () => reject(new Error('Formato de imagen no soportado.'));
-        img.onload = () => {
-          const scale = Math.min(1, max / Math.max(img.width, img.height));
-          const w = Math.round(img.width * scale), h = Math.round(img.height * scale);
-          const c = document.createElement('canvas');
-          c.width = w; c.height = h;
-          const ctx = c.getContext('2d');
-          ctx.fillStyle = '#fff';
-          ctx.fillRect(0, 0, w, h);
-          ctx.drawImage(img, 0, 0, w, h);
-          resolve(c.toDataURL('image/jpeg', quality));
-        };
-        img.src = reader.result;
-      };
-      reader.readAsDataURL(file);
-    });
-  }
+/* =========================================================
+ * Navegación y render
+ * ========================================================= */
+function route() {
+  const parts = location.hash.replace(/^#\/?/, '').split('?')[0].split('/').filter(Boolean);
+  return { name: parts[0] || '', id: parts[1] || '', sub: parts[2] || '', key: parts.join('/') };
+}
+const go = (h) => { if (location.hash === h) navigate(); else location.hash = h; };
 
-  /* ---------- Modales ---------- */
-  function openModal(html, { cls = '', onClose } = {}) {
-    const root = $('#modal-root');
-    root.innerHTML = `<div class="modal-backdrop" data-action="close-modal-bg"><div class="modal ${cls}" role="dialog" aria-modal="true">${html}</div></div>`;
-    document.body.classList.add('no-scroll');
-    root._onClose = onClose;
-    const first = root.querySelector('input, textarea, select');
-    if (first && window.matchMedia('(min-width: 768px)').matches) first.focus();
-    return root.firstElementChild;
-  }
-  function closeModal() {
-    const root = $('#modal-root');
-    if (!root.innerHTML) return;
-    const cb = root._onClose;
-    root.innerHTML = '';
-    root._onClose = null;
-    document.body.classList.remove('no-scroll');
-    if (cb) cb();
-  }
-  function confirmModal(title, text, okLabel = 'Aceptar', danger = false) {
-    return new Promise((resolve) => {
-      let answered = false;
-      openModal(`
-        <div class="modal-body center">
-          <h3>${esc(title)}</h3>
-          ${text ? `<p class="muted">${esc(text)}</p>` : ''}
-        </div>
-        <div class="modal-list">
-          <button class="${danger ? 'danger' : 'primary-text'}" data-confirm="yes">${esc(okLabel)}</button>
-          <button data-confirm="no">Cancelar</button>
-        </div>`, { cls: 'small', onClose: () => { if (!answered) resolve(false); } });
-      $$('#modal-root [data-confirm]').forEach((b) => b.addEventListener('click', () => {
-        answered = true; resolve(b.dataset.confirm === 'yes'); closeModal();
-      }));
-    });
-  }
-  function promptModal(title, label, placeholder = '') {
-    return new Promise((resolve) => {
-      let answered = false;
-      openModal(`
-        <div class="modal-head"><h3>${esc(title)}</h3></div>
-        <form class="modal-body" id="prompt-form">
-          <label class="field"><span>${esc(label)}</span>
-            <textarea name="v" rows="3" placeholder="${esc(placeholder)}"></textarea></label>
-          <div class="row-end"><button type="button" class="btn ghost" id="prompt-cancel">Cancelar</button>
-          <button class="btn primary">Guardar</button></div>
-        </form>`, { cls: 'small', onClose: () => { if (!answered) resolve(null); } });
-      $('#prompt-cancel').onclick = () => closeModal();
-      $('#prompt-form').onsubmit = (e) => { e.preventDefault(); answered = true; resolve(e.target.v.value.trim()); closeModal(); };
-    });
-  }
+let renderQueued = false, renderOpts = {};
+function schedule(opts = {}) {
+  Object.assign(renderOpts, opts);
+  if (renderQueued) return;
+  renderQueued = true;
+  requestAnimationFrame(() => { renderQueued = false; const o = renderOpts; renderOpts = {}; draw(false, o); });
+}
+function navigate(force) {
+  const r = route();
+  const changed = r.key !== lastRoute || force;
+  if (!changed) return schedule();
+  const run = () => draw(true);
+  if (document.startViewTransition && !matchMedia('(prefers-reduced-motion: reduce)').matches) {
+    const t = document.startViewTransition(run);
+    [t.ready, t.finished, t.updateCallbackDone].forEach((pr) => pr && pr.catch(() => {}));
+  } else run();
+}
 
-  function inputModal(title, label, type = 'text', value = '') {
-    return new Promise((resolve) => {
-      let answered = false;
-      openModal(`
-        <div class="modal-head"><h3>${esc(title)}</h3></div>
-        <form class="modal-body stack" id="input-form">
-          <label class="field"><span>${esc(label)}</span><input name="v" type="${type}" value="${esc(value)}" required></label>
-          <div class="row-end"><button type="button" class="btn ghost" id="input-cancel">Cancelar</button>
-          <button class="btn primary">Aceptar</button></div>
-        </form>`, { cls: 'small', onClose: () => { if (!answered) resolve(null); } });
-      $('#input-form').v.focus();
-      $('#input-cancel').onclick = () => closeModal();
-      $('#input-form').onsubmit = (e) => { e.preventDefault(); answered = true; const v = e.target.v.value; closeModal(); resolve(v); };
-    });
-  }
+function keepState() {
+  const st = {};
+  $$('[data-keep]').forEach((el) => { st[el.dataset.keep] = { v: el.value, f: el === document.activeElement, s: el.selectionStart, e: el.selectionEnd }; });
+  return st;
+}
+function restoreState(st) {
+  Object.entries(st).forEach(([k, o]) => {
+    const el = $(`[data-keep="${k}"]`);
+    if (!el) return;
+    el.value = o.v;
+    if (o.f) { el.focus(); try { el.setSelectionRange(o.s, o.e); } catch (e) { /* nada */ } }
+    if (el.tagName === 'TEXTAREA') autosize(el);
+  });
+}
 
-  /* ======================================================
-   * Router
-   * ====================================================== */
-  // En claude.ai la página no puede usar rutas en la URL: navegamos en memoria
-  const MEM = !!S.memoryRouter;
-  const MANAGED = !!S.managedAuth; // la cuenta la gestiona Claude: sin contraseña ni cierre de sesión
-  let memHash = '#/';
-  const memStack = [];
-  const getHash = () => (MEM ? memHash : location.hash);
-  function setHash(h) {
-    if (!MEM) { location.hash = h; return; }
-    if (h === memHash) return;
-    memStack.push(memHash);
-    if (memStack.length > 50) memStack.shift();
-    memHash = h;
-    closeModal();
-    render();
-  }
+function draw(isNav, opts = {}) {
+  const r = route();
+  const view = $('#view');
+  const st = isNav ? {} : keepState();
+  const nearBottom = innerHeight + scrollY >= document.body.scrollHeight - 140;
+  const prevScroll = scrollY;
 
-  function parseHash() {
-    const raw = getHash().replace(/^#\/?/, '');
-    const [path, query = ''] = raw.split('?');
-    const parts = path.split('/').filter(Boolean).map(decodeURIComponent);
-    const params = Object.fromEntries(new URLSearchParams(query));
-    return { name: parts[0] || 'feed', parts, params };
-  }
-  const go = (h) => { if (getHash() === h) render(); else setHash(h); };
+  let v;
+  if (!B) return;
+  if (!S.user) v = AuthView();
+  else if (S.user.wantsAdmin && !S.user.isAdmin) v = VerifyView();
+  else if (!S.loaded) v = { html: skeleton(), tabbar: true };
+  else v = (isAdmin() ? adminView : ownerView)(r);
 
-  const ROUTES = {
-    feed: () => FeedPage(),
-    explore: (r) => ExplorePage(r.params),
-    create: () => CreatePage(),
-    appointments: () => AppointmentsPage(),
-    messages: (r) => MessagesPage(r.parts[1]),
-    notifications: () => NotificationsPage(),
-    u: (r) => ProfilePage(r.parts[1]),
-    p: (r) => PostPage(r.parts[1]),
-    edit: () => EditProfilePage(),
+  // chat: suscripción solo mientras se ve
+  if (r.name !== 'chat' && msgSub) { msgSub(); msgSub = null; msgPetId = null; }
+
+  view.innerHTML = v.html;
+  document.body.dataset.view = v.cls || r.name || 'home';
+  document.body.classList.toggle('no-tabbar', !v.tabbar);
+  renderTabbar(v.tabbar);
+  if (!isNav) { restoreState(st); scrollTo(0, prevScroll); }
+  else if (r.key !== lastRoute) scrollTo(0, 0);
+  if (isNav) lastRoute = r.key;
+  v.mount && v.mount({ isNav, nearBottom, opts });
+  enhance(view, isNav);
+  onScroll();
+}
+
+/* ---------- Barra de pestañas flotante ---------- */
+const TABS = {
+  owner: [['', 'Inicio', 'home'], ['pets', 'Animales', 'paw'], ['chats', 'Chat', 'chat'], ['appts', 'Citas', 'calendar'], ['profile', 'Perfil', 'person']],
+  admin: [['', 'Panel', 'grid'], ['inbox', 'Mensajes', 'chat'], ['clients', 'Clientes', 'people'], ['agenda', 'Agenda', 'calendar'], ['settings', 'Ajustes', 'gear']],
+};
+const TAB_OF = { pet: 'pets', chat: 'chats', client: 'clients' };
+function renderTabbar(show) {
+  const bar = $('#tabbar');
+  if (!show || !S.user) { bar.classList.remove('show'); return; }
+  const role = isAdmin() ? 'admin' : 'owner';
+  const r = route();
+  let active = TAB_OF[r.name] || r.name;
+  if (role === 'admin' && r.name === 'chat') active = 'inbox';
+  if (role === 'admin' && r.name === 'pet') active = 'clients';
+  const badge = (key) => {
+    if (key === 'chats') return S.pets.reduce((s, p) => s + (p.unreadOwner || 0), 0);
+    if (key === 'inbox') return S.pets.reduce((s, p) => s + (p.unreadAdmin || 0), 0);
+    if (key === 'agenda') return S.appts.filter((a) => a.status === 'pendiente').length;
+    return 0;
   };
+  const sig = role + '|' + active + '|' + TABS[role].map(([k]) => badge(k)).join(',');
+  if (bar.dataset.sig !== sig) {
+    bar.dataset.sig = sig;
+    bar.innerHTML = `<span class="tab-indicator"></span>${TABS[role].map(([k, label, icon]) => {
+      const n = badge(k);
+      return `<a href="#/${k}" class="tab${active === k ? ' active' : ''}" data-tab="${k}">${I[icon]}<span>${label}</span>${n ? `<b class="badge">${n > 99 ? '99+' : n}</b>` : ''}</a>`;
+    }).join('')}`;
+  }
+  bar.classList.add('show');
+  requestAnimationFrame(() => moveIndicator(bar));
+}
+function moveIndicator(bar) {
+  const a = $('.tab.active', bar), ind = $('.tab-indicator', bar);
+  if (!a || !ind) { if (ind) ind.style.opacity = '0'; return; }
+  ind.style.opacity = '1';
+  ind.style.width = a.offsetWidth + 'px';
+  ind.style.transform = `translateX(${a.offsetLeft}px)`;
+}
+addEventListener('resize', () => moveIndicator($('#tabbar')));
 
-  let me = null;
-  let lastRoute = '';
+/* ---------- Efectos ---------- */
+function enhance(root, isNav) {
+  if (isNav) countUp(root);
+  $$('[data-tilt]', root).forEach(tilt);
+  $$('.seg', root).forEach(layoutSeg);
+  hydrateFiles(root);
+  $$('textarea[data-auto]', root).forEach(autosize);
+  $$('.chart path.line', root).forEach((p) => {
+    if (!isNav) return;
+    const L = p.getTotalLength(); p.style.strokeDasharray = L; p.style.strokeDashoffset = L;
+    requestAnimationFrame(() => { p.style.transition = 'stroke-dashoffset 1.2s cubic-bezier(.2,.8,.2,1)'; p.style.strokeDashoffset = '0'; });
+  });
+  if (!isNav) $$('.rise', root).forEach((el) => el.classList.add('static'));
+}
+function tilt(el) {
+  if (el._tilt || matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+  el._tilt = true;
+  el.addEventListener('pointermove', (e) => {
+    const r = el.getBoundingClientRect();
+    const x = (e.clientX - r.left) / r.width - .5, y = (e.clientY - r.top) / r.height - .5;
+    el.style.transform = `perspective(900px) rotateY(${x * 10}deg) rotateX(${-y * 10}deg) scale(1.01)`;
+    el.style.setProperty('--gx', `${(x + .5) * 100}%`); el.style.setProperty('--gy', `${(y + .5) * 100}%`);
+  });
+  el.addEventListener('pointerleave', () => { el.style.transform = ''; });
+}
+function layoutSeg(seg) {
+  const a = $('.seg-btn.active', seg), th = $('.seg-thumb', seg);
+  if (!a || !th) return;
+  th.style.width = a.offsetWidth + 'px';
+  th.style.transform = `translateX(${a.offsetLeft - 3}px)`;
+}
+function autosize(t) { t.style.height = 'auto'; t.style.height = Math.min(160, t.scrollHeight) + 'px'; }
+// brillo que sigue al puntero sobre el cristal
+document.addEventListener('pointermove', (e) => {
+  const el = e.target.closest && e.target.closest('.glass');
+  if (!el) return;
+  const r = el.getBoundingClientRect();
+  el.style.setProperty('--mx', `${e.clientX - r.left}px`);
+  el.style.setProperty('--my', `${e.clientY - r.top}px`);
+}, { passive: true });
+// título grande que se encoge al hacer scroll
+function onScroll() {
+  const nav = $('.nav');
+  if (nav) nav.classList.toggle('scrolled', scrollY > 38);
+}
+addEventListener('scroll', onScroll, { passive: true });
 
-  function render() {
-    me = S.currentUser();
-    const route = parseHash();
-    const app = $('#app');
+/* Archivos dentro de la vista: miniaturas que se cargan al vuelo */
+function hydrateFiles(root) {
+  $$('img[data-file]', root).forEach((img) => {
+    if (img._h) return; img._h = true;
+    const meta = JSON.parse(img.dataset.file);
+    B.openFile(meta).then((u) => { img.src = u; img.classList.add('ready'); }).catch(() => img.classList.add('broken'));
+  });
+}
 
-    if (!me) {
-      if (MANAGED) route.name = 'register';
-      else if (route.name !== 'register') route.name = 'login';
-      app.innerHTML = route.name === 'register' ? RegisterPage() : LoginPage();
-      mountAuth();
+/* =========================================================
+ * Piezas comunes
+ * ========================================================= */
+function nav(title, { back = false, right = '', sub = '' } = {}) {
+  return `<header class="nav"><div class="nav-bar">
+      <div class="nav-l">${back ? `<button class="nav-back" data-act="back">${I.back}<span>Atrás</span></button>` : ''}</div>
+      <div class="nav-title">${esc(title)}</div>
+      <div class="nav-r">${right}</div>
+    </div></header>
+    <div class="large-head"><h1 class="large-title">${esc(title)}</h1>${sub ? `<p class="large-sub">${sub}</p>` : ''}</div>`;
+}
+function petAvatar(p, size = 44, ring = false) {
+  const inner = p.photo ? `<img src="${esc(p.photo)}" alt="">` : `<span>${esc((p.name || '?')[0].toUpperCase())}</span>`;
+  return `<span class="pet-av${ring ? ' ring' : ''}" style="--s:${size}px;--g:${speciesGrad(p.species)}">${inner}</span>`;
+}
+function userAvatar(u, size = 40) {
+  if (!u) return `<span class="user-av" style="--s:${size}px"><span>?</span></span>`;
+  return `<span class="user-av" style="--s:${size}px">${u.avatar ? `<img src="${esc(u.avatar)}" alt="">` : `<span>${esc(initials(u.name))}</span>`}</span>`;
+}
+const clinicAvatar = (size = 40) => `<span class="clinic-av" style="--s:${size}px"><span class="orb"></span></span>`;
+const empty = (icon, title, text, btn = '') => `<div class="empty rise"><div class="empty-ico">${I[icon]}</div><h3>${esc(title)}</h3><p class="muted">${esc(text)}</p>${btn}</div>`;
+const skeleton = () => `<div class="page"><div class="sk sk-title"></div><div class="sk sk-card"></div><div class="sk sk-card"></div><div class="sk sk-row"></div></div>`;
+function seg(name, value, opts) {
+  return `<div class="seg" role="tablist"><span class="seg-thumb"></span>${opts.map(([v, l]) => `<button class="seg-btn${v === value ? ' active' : ''}" data-act="seg" data-seg="${name}" data-val="${v}" role="tab">${l}</button>`).join('')}</div>`;
+}
+const statusLabel = { pendiente: 'Pendiente', confirmada: 'Confirmada', rechazada: 'Rechazada', cancelada: 'Cancelada', completada: 'Completada' };
+const statusPill = (s) => `<span class="pill st-${s}">${statusLabel[s] || s}</span>`;
+function fileTile(f) {
+  const k = fileKind(f.type);
+  const data = esc(JSON.stringify({ id: f.id, name: f.name, type: f.type, size: f.size }));
+  return `<button class="file-tile" data-act="open-file" data-file="${data}">
+    ${k === 'image' ? `<img data-file="${data}" alt="">` : `<span class="file-ico ${k}">${k === 'pdf' ? 'PDF' : I.doc}</span>`}
+    <span class="file-meta"><b>${esc(f.name)}</b><small>${fmtSize(f.size || 0)}</small></span></button>`;
+}
+function vaccineStatus(r) {
+  if (!r.nextDate) return null;
+  const d = daysUntil(r.nextDate);
+  if (d < 0) return { cls: 'due', text: `Vencida hace ${-d} d` };
+  if (d <= 30) return { cls: 'soon', text: d === 0 ? 'Hoy' : `En ${d} d` };
+  return { cls: 'ok', text: fmtDate(r.nextDate, { day: 'numeric', month: 'short', year: 'numeric' }) };
+}
+function upcomingVaccines(pets) {
+  const out = [];
+  pets.forEach((p) => {
+    const recs = (S.recs[p.id] || []).filter((r) => r.type === 'vacuna' && r.nextDate);
+    const latest = {};
+    recs.forEach((r) => { const k = r.title.toLowerCase(); if (!latest[k] || latest[k].date < r.date) latest[k] = r; });
+    Object.values(latest).forEach((r) => { if (daysUntil(r.nextDate) <= 45) out.push({ pet: p, r }); });
+  });
+  return out.sort((a, b) => a.r.nextDate.localeCompare(b.r.nextDate));
+}
+function apptCard(a, i = 0) {
+  const p = petById(a.petId) || { name: 'Animal', species: 'Otro' };
+  const d = parseISO(a.date);
+  return `<button class="glass appt rise" style="--i:${i}" data-act="appt-menu" data-id="${a.id}">
+    <span class="appt-date"><small>${d.toLocaleDateString('es-ES', { month: 'short' }).replace('.', '')}</small><b>${d.getDate()}</b><small>${esc(a.time)}</small></span>
+    <span class="appt-body"><span class="appt-top">${statusPill(a.status)}<small class="muted">${fmtDay(a.date)}</small></span>
+      <b>${esc(a.reason || 'Consulta')}</b>
+      <span class="appt-who">${petAvatar(p, 22)} ${esc(p.name)}${isAdmin() ? ` · <span class="muted">${esc(ownerName(p))}</span>` : ''}</span>
+      ${a.note ? `<span class="appt-note">${I.info}${esc(a.note)}</span>` : ''}
+    </span>${I.chevron}</button>`;
+}
+function petCard(p, i = 0) {
+  const unread = isAdmin() ? p.unreadAdmin : p.unreadOwner;
+  return `<a href="#/pet/${p.id}" class="pet-card rise" style="--i:${i};--g:${speciesGrad(p.species)}" data-tilt>
+    <span class="pet-card-glow"></span>
+    ${p.photo ? `<img class="pet-card-photo" src="${esc(p.photo)}" alt="">` : `<span class="pet-card-letter">${esc(p.name[0].toUpperCase())}</span>`}
+    <span class="pet-card-info"><b>${esc(p.name)}</b><small>${esc(p.species)}${p.breed ? ' · ' + esc(p.breed) : ''}</small>
+      <small class="pet-card-age">${ageOf(p.birthDate) || ' '}</small></span>
+    ${unread ? `<span class="badge float">${unread}</span>` : ''}
+  </a>`;
+}
+
+/* =========================================================
+ * Acceso
+ * ========================================================= */
+function AuthView() {
+  const login = ui.authTab === 'login';
+  const demo = B.mode === 'demo';
+  return {
+    cls: 'auth', tabbar: false,
+    html: `<div class="auth">
+      <div class="auth-hero rise">
+        <div class="hero-orb"><span></span></div>
+        <h1 class="brand-title">${esc(CONFIG.clinicName || 'Visvet')}</h1>
+        <p class="brand-sub">Tu clínica veterinaria,<br>en el bolsillo.</p>
+      </div>
+      <div class="glass auth-card rise" style="--i:1">
+        ${seg('authTab', ui.authTab, [['login', 'Entrar'], ['signup', 'Crear cuenta']])}
+        <form class="form" id="auth-form" novalidate>
+          ${login ? '' : `<label class="field"><span>Tu nombre</span><input name="name" data-keep="a-name" autocomplete="name" placeholder="Ana Martínez" required></label>
+          <label class="field"><span>Teléfono <i>(opcional)</i></span><input name="phone" data-keep="a-phone" type="tel" autocomplete="tel" placeholder="+34 600 000 000"></label>`}
+          <label class="field"><span>Correo electrónico</span><input name="email" data-keep="a-email" type="email" autocomplete="email" placeholder="tu@correo.com" required></label>
+          <label class="field"><span>Contraseña</span><input name="password" data-keep="a-pw" type="password" autocomplete="${login ? 'current-password' : 'new-password'}" placeholder="${login ? '••••••••' : 'Mínimo 6 caracteres'}" required></label>
+          <p class="form-error" id="auth-error"></p>
+          <button class="btn primary block lg">${login ? 'Entrar' : 'Crear mi cuenta'}</button>
+          ${login && !demo ? '<button type="button" class="btn plain block" data-act="forgot">¿Has olvidado la contraseña?</button>' : ''}
+        </form>
+        ${demo ? `<div class="demo-box">
+          <p class="eyebrow">${I.sparkle} Modo demostración</p>
+          <div class="demo-btns">${B.demoAccounts.map((a) => `<button class="btn glass-btn" data-act="demo" data-email="${a.email}">${I[a.icon]} ${esc(a.label)}</button>`).join('')}</div>
+          <p class="tiny muted">Los datos de la demo se guardan solo en este navegador. Abre la app en dos pestañas, una como clínica y otra como cliente, y prueba el chat en tiempo real.</p>
+        </div>` : ''}
+      </div>
+      <p class="auth-foot tiny muted rise" style="--i:2">Al crear tu cuenta podrás registrar a tus animales, ver su cartilla y hablar con la clínica.</p>
+    </div>`,
+    mount() {
+      const f = $('#auth-form');
+      f.onsubmit = async (e) => {
+        e.preventDefault();
+        const err = $('#auth-error');
+        err.textContent = '';
+        const btn = f.querySelector('.btn.primary');
+        btn.classList.add('loading');
+        try {
+          if (login) await B.signIn(f.email.value, f.password.value);
+          else {
+            if (!f.name.value.trim()) throw new Error('Escribe tu nombre.');
+            await B.signUp({ name: f.name.value, email: f.email.value, password: f.password.value, phone: f.phone.value });
+            toast('¡Cuenta creada! Bienvenido/a a Visvet');
+          }
+        } catch (ex) {
+          err.textContent = ex.message; btn.classList.remove('loading');
+          f.classList.remove('shake'); void f.offsetWidth; f.classList.add('shake'); haptic([10, 30, 10]);
+        }
+      };
+    },
+  };
+}
+
+function VerifyView() {
+  return {
+    cls: 'auth', tabbar: false,
+    html: `<div class="center-screen"><div class="glass card pad verify rise">
+      <div class="empty-ico">${I.mail}</div>
+      <h2>Verifica el correo de la clínica</h2>
+      <p class="muted">Por seguridad, la cuenta de administración necesita confirmar su correo. Te hemos enviado un enlace a <b>${esc(S.user.email)}</b>. Ábrelo y vuelve aquí.</p>
+      <button class="btn primary block lg" data-act="verify-check">Ya lo he verificado</button>
+      <button class="btn plain block" data-act="verify-resend">Reenviar el correo</button>
+      <button class="btn plain block" data-act="logout">Cerrar sesión</button>
+    </div></div>`,
+  };
+}
+
+/* =========================================================
+ * CLIENTE
+ * ========================================================= */
+function ownerView(r) {
+  switch (r.name) {
+    case 'pets': return OwnerPets();
+    case 'pet': return PetView(r.id);
+    case 'chats': return OwnerChats();
+    case 'chat': return ChatView(r.id);
+    case 'appts': return OwnerAppts();
+    case 'profile': return ProfileView();
+    default: return OwnerHome();
+  }
+}
+
+function OwnerHome() {
+  const first = ((S.profile && S.profile.name) || '').split(' ')[0];
+  const next = S.appts.filter((a) => a.date >= todayISO() && ['pendiente', 'confirmada'].includes(a.status));
+  const vacc = upcomingVaccines(S.pets);
+  const pending = S.pets.reduce((s, p) => s + (p.pendingAmount || 0), 0);
+  const news = S.pets.flatMap((p) => (S.recs[p.id] || []).slice(0, 3).map((r) => ({ p, r })))
+    .sort((a, b) => (b.r.createdAt || 0) - (a.r.createdAt || 0)).slice(0, 4);
+  const unread = S.pets.reduce((s, p) => s + (p.unreadOwner || 0), 0);
+  const today = new Date().toLocaleDateString('es-ES', { weekday: 'long', day: 'numeric', month: 'long' });
+  let i = 0;
+  return {
+    tabbar: true, cls: 'home',
+    html: `<div class="page">
+      ${nav(`${greeting()}${first ? ', ' + first : ''}`, { sub: `<span class="cap">${today}</span>`, right: `<a href="#/profile" class="nav-av">${userAvatar(S.profile, 34)}</a>` })}
+
+      <div class="quick rise" style="--i:${i++}">
+        <a class="quick-btn glass" href="#/chats">${I.chat}<span>Escribir a ${esc(clinicName())}</span>${unread ? `<b class="badge">${unread}</b>` : ''}</a>
+        <button class="quick-btn glass" data-act="req-appt">${I.calendar}<span>Pedir cita</span></button>
+        <button class="quick-btn glass" data-act="add-pet">${I.plus}<span>Añadir animal</span></button>
+      </div>
+
+      <section class="sec">
+        <div class="sec-head"><h2>Tus animales</h2><a href="#/pets">Ver todos</a></div>
+        ${S.pets.length ? `<div class="pet-rail">${S.pets.map((p) => petCard(p, i++)).join('')}</div>`
+          : empty('paw', 'Añade a tu primer animal', 'Registra a tu perro, gato o cualquier compañero para tener su cartilla y hablar con la clínica.', '<button class="btn primary" data-act="add-pet">Añadir animal</button>')}
+      </section>
+
+      ${next.length || vacc.length || pending ? `<section class="sec"><div class="sec-head"><h2>Próximamente</h2></div>
+        <div class="stack">
+          ${next.slice(0, 2).map((a) => apptCard(a, i++)).join('')}
+          ${vacc.slice(0, 3).map(({ pet, r }) => { const s = vaccineStatus(r); return `<a href="#/pet/${pet.id}" class="glass row-card rise" style="--i:${i++}">
+              <span class="row-ico" style="--c:${RECORD_TYPES.vacuna.color}">${I.syringe}</span>
+              <span class="grow"><b>${esc(r.title)}</b><small class="muted">${esc(pet.name)} · próxima dosis</small></span>
+              <span class="pill vac-${s.cls}">${s.text}</span></a>`; }).join('')}
+          ${pending ? `<div class="glass row-card rise warn-card" style="--i:${i++}"><span class="row-ico" style="--c:${RECORD_TYPES.factura.color}">${I.invoice}</span>
+              <span class="grow"><b>Pagos pendientes</b><small class="muted">Facturas sin pagar en la cartilla</small></span><b class="money">${fmtMoney(pending)}</b></div>` : ''}
+        </div></section>` : ''}
+
+      ${news.length ? `<section class="sec"><div class="sec-head"><h2>Novedades de la clínica</h2></div>
+        <div class="glass list rise" style="--i:${i++}">${news.map(({ p, r }) => recordRow(p, r)).join('')}</div></section>` : ''}
+
+      ${clinicCard(i++)}
+    </div>`,
+  };
+}
+
+function clinicCard(i = 0) {
+  const c = S.clinic;
+  return `<section class="sec"><div class="glass clinic-card rise" style="--i:${i}">
+    <div class="clinic-top">${clinicAvatar(48)}<div><b>${esc(clinicName())}</b><small class="muted">Tu clínica veterinaria</small></div><a class="btn primary sm" href="#/chats">${I.chat} Chat</a></div>
+    <div class="clinic-info">
+      ${c.hours ? `<span>${I.clock}${esc(c.hours)}</span>` : ''}
+      ${c.address ? `<span>${I.pin}${esc(c.address)}</span>` : ''}
+      ${c.phone ? `<span class="copyable" data-act="copy" data-text="${esc(c.phone)}">${I.phone}${esc(c.phone)}</span>` : ''}
+      ${c.emergency ? `<span class="copyable emergency" data-act="copy" data-text="${esc(c.emergency)}">${I.bolt}Urgencias: ${esc(c.emergency)}</span>` : ''}
+    </div></div></section>`;
+}
+
+function OwnerPets() {
+  return {
+    tabbar: true, cls: 'pets',
+    html: `<div class="page">
+      ${nav('Tus animales', { right: `<button class="nav-btn" data-act="add-pet" aria-label="Añadir">${I.plus}</button>` })}
+      ${S.pets.length ? `<div class="pet-grid">${S.pets.map((p, i) => petCard(p, i)).join('')}
+          <button class="pet-card add rise" style="--i:${S.pets.length}" data-act="add-pet">${I.plus}<span>Añadir animal</span></button></div>`
+        : empty('paw', 'Todavía no hay animales', 'Añade a tus compañeros para ver su cartilla, sus vacunas y hablar con la clínica.', '<button class="btn primary" data-act="add-pet">Añadir animal</button>')}
+    </div>`,
+  };
+}
+
+function OwnerChats() {
+  const list = S.pets.slice().sort((a, b) => (b.lastMessageAt || 0) - (a.lastMessageAt || 0));
+  return {
+    tabbar: true, cls: 'chats',
+    html: `<div class="page">
+      ${nav('Chat', { sub: `Habla en privado con ${esc(clinicName())} sobre cada uno de tus animales.` })}
+      ${list.length ? `<div class="glass list rise">${list.map((p) => threadRow(p)).join('')}</div>`
+        : empty('chat', 'Sin conversaciones', 'Añade un animal para empezar a hablar con la clínica.', '<button class="btn primary" data-act="add-pet">Añadir animal</button>')}
+    </div>`,
+  };
+}
+function threadRow(p) {
+  const unread = isAdmin() ? p.unreadAdmin : p.unreadOwner;
+  const title = isAdmin() ? `${esc(p.name)} <span class="muted">· ${esc(ownerName(p))}</span>` : esc(p.name);
+  const prefix = p.lastMessage ? ((isAdmin() ? p.lastFromAdmin : !p.lastFromAdmin) ? 'Tú: ' : '') : '';
+  return `<a href="#/chat/${p.id}" class="row${unread ? ' unread' : ''}">
+    ${petAvatar(p, 50)}
+    <span class="grow"><span class="row-title"><b>${title}</b><small class="muted">${p.lastMessageAt ? chatStamp(p.lastMessageAt) : ''}</small></span>
+      <small class="row-sub">${p.lastMessage ? esc(prefix + p.lastMessage) : '<i>Escribe el primer mensaje</i>'}</small></span>
+    ${unread ? `<b class="badge">${unread}</b>` : I.chevron}</a>`;
+}
+
+function OwnerAppts() {
+  const t = todayISO();
+  const up = S.appts.filter((a) => a.date >= t && ['pendiente', 'confirmada'].includes(a.status));
+  const past = S.appts.filter((a) => !up.includes(a)).reverse();
+  const list = ui.apptTab === 'up' ? up : past;
+  return {
+    tabbar: true, cls: 'appts',
+    html: `<div class="page">
+      ${nav('Citas', { right: `<button class="nav-btn" data-act="req-appt" aria-label="Pedir cita">${I.plus}</button>` })}
+      ${seg('apptTab', ui.apptTab, [['up', `Próximas${up.length ? ' · ' + up.length : ''}`], ['past', 'Historial']])}
+      <div class="stack gap-top">${list.map((a, i) => apptCard(a, i)).join('') || empty('calendar', ui.apptTab === 'up' ? 'No tienes citas próximas' : 'Sin historial', ui.apptTab === 'up' ? 'Pide cita y la clínica te la confirmará en la app.' : 'Aquí verás tus citas anteriores.', ui.apptTab === 'up' ? '<button class="btn primary" data-act="req-appt">Pedir cita</button>' : '')}</div>
+    </div>`,
+  };
+}
+
+function ProfileView() {
+  const p = S.profile || {};
+  return {
+    tabbar: true, cls: 'profile',
+    html: `<div class="page">
+      ${nav('Perfil')}
+      <div class="glass profile-card rise">
+        <button class="profile-photo" data-act="profile-photo">${userAvatar(p, 84)}<span class="cam">${I.camera}</span></button>
+        <div><h2>${esc(p.name || '')}</h2><p class="muted">${esc(S.user.email)}</p></div>
+        <input type="file" accept="image/*" id="avatar-input" hidden>
+      </div>
+      <form class="glass list form-list rise" style="--i:1" id="profile-form">
+        <label class="row field-row"><span>Nombre</span><input name="name" data-keep="p-name" value="${esc(p.name || '')}" required></label>
+        <label class="row field-row"><span>Teléfono</span><input name="phone" data-keep="p-phone" type="tel" value="${esc(p.phone || '')}" placeholder="Añadir"></label>
+        <div class="row"><button class="btn primary sm ml-auto">Guardar</button></div>
+      </form>
+      ${clinicCard(2)}
+      <div class="glass list rise" style="--i:3">
+        <div class="row"><span class="row-ico" style="--c:#0a84ff">${I.bolt}</span><span class="grow"><b>Instalar la app</b><small class="muted">Safari: Compartir → Añadir a pantalla de inicio · Chrome: ⋮ → Instalar</small></span></div>
+        <div class="row"><span class="row-ico" style="--c:${B.mode === 'demo' ? '#ff9f0a' : '#30d158'}">${I.shield}</span><span class="grow"><b>${B.mode === 'demo' ? 'Modo demostración' : 'Conectado a la nube'}</b><small class="muted">${B.mode === 'demo' ? 'Los datos se guardan solo en este navegador.' : 'Tus datos se sincronizan en todos tus dispositivos.'}</small></span></div>
+        <button class="row" data-act="logout"><span class="row-ico" style="--c:#8e8e93">${I.logout}</span><span class="grow"><b>Cerrar sesión</b></span></button>
+        ${B.mode === 'demo' ? `<button class="row" data-act="reset-demo"><span class="row-ico" style="--c:#ff9f0a">${I.sparkle}</span><span class="grow"><b>Restablecer la demo</b></span></button>` : ''}
+        <button class="row danger" data-act="delete-account"><span class="row-ico" style="--c:#ff375f">${I.trash}</span><span class="grow"><b>Eliminar mi cuenta</b></span></button>
+      </div>
+    </div>`,
+    mount() {
+      $('#profile-form').onsubmit = async (e) => {
+        e.preventDefault();
+        try { await B.saveProfile({ name: e.target.name.value.trim(), phone: e.target.phone.value.trim() }); toast('Perfil guardado'); }
+        catch (ex) { toast(ex.message, 'error'); }
+      };
+      $('#avatar-input').onchange = async (e) => {
+        const f = e.target.files[0]; if (!f) return;
+        try { await B.saveProfile({ avatar: await compressImage(f, 360, 0.82) }); toast('Foto actualizada'); }
+        catch (ex) { toast(ex.message, 'error'); }
+      };
+    },
+  };
+}
+
+/* =========================================================
+ * Ficha del animal (cliente y clínica)
+ * ========================================================= */
+function PetView(id) {
+  const p = petById(id);
+  if (!p) return { tabbar: true, html: `<div class="page">${nav('Animal', { back: true })}${empty('paw', 'No encontrado', 'Este animal ya no existe o no tienes acceso.')}</div>` };
+  ensureRecords(id);
+  const recs = S.recs[id];
+  const admin = isAdmin();
+  const lastW = (p.weights || []).slice(-1)[0];
+  const owner = userById(p.ownerId);
+  const tab = ui.petTab;
+  let body = '';
+  if (tab === 'cartilla') {
+    const types = ['all', ...Object.keys(RECORD_TYPES).filter((t) => (recs || []).some((r) => r.type === t))];
+    const list = (recs || []).filter((r) => ui.recFilter === 'all' || r.type === ui.recFilter);
+    body = `${admin ? `<button class="glass add-doc rise" data-act="add-record" data-pet="${id}">${I.plus}<span><b>Añadir a la cartilla</b><small>Diagnóstico, vacuna, factura, análisis, receta…</small></span></button>` : ''}
+      ${types.length > 2 ? `<div class="chips">${types.map((t) => `<button class="chip${ui.recFilter === t ? ' active' : ''}" data-act="rec-filter" data-val="${t}">${t === 'all' ? 'Todo' : RECORD_TYPES[t].label}</button>`).join('')}</div>` : ''}
+      ${recs === undefined ? '<div class="sk sk-row"></div><div class="sk sk-row"></div>'
+        : list.length ? `<div class="timeline">${list.map((r, i) => timelineItem(p, r, i)).join('')}</div>`
+        : empty('folder', 'Cartilla vacía', admin ? 'Añade el primer documento de este paciente.' : 'Cuando la clínica añada diagnósticos, vacunas o facturas, aparecerán aquí.')}`;
+  } else if (tab === 'salud') {
+    const vacc = (recs || []).filter((r) => r.type === 'vacuna');
+    body = `<div class="glass panel rise">
+        <div class="panel-head"><h3>${I.scale} Peso</h3><button class="btn glass-btn sm" data-act="add-weight" data-pet="${id}">${I.plus} Registrar</button></div>
+        ${weightChart(p.weights || [])}
+      </div>
+      <div class="glass panel rise" style="--i:1">
+        <div class="panel-head"><h3>${I.syringe} Vacunas</h3></div>
+        ${vacc.length ? `<div class="vac-list">${vacc.map((r) => { const s = vaccineStatus(r); return `<button class="vac" data-act="open-record" data-pet="${id}" data-rec="${r.id}"><span class="grow"><b>${esc(r.title)}</b><small class="muted">Puesta el ${fmtDate(r.date)}</small></span>${s ? `<span class="pill vac-${s.cls}">${s.text}</span>` : ''}</button>`; }).join('')}</div>` : '<p class="muted pad-s">Sin vacunas registradas.</p>'}
+      </div>
+      <div class="glass panel rise" style="--i:2">
+        <div class="panel-head"><h3>${I.heart} Alergias y notas</h3></div>
+        <div class="chips static">${(p.allergies || []).length ? p.allergies.map((a) => `<span class="chip warn">${esc(a)}</span>`).join('') : '<span class="muted">Sin alergias conocidas</span>'}</div>
+        ${p.notes ? `<p class="note">${esc(p.notes)}</p>` : ''}
+      </div>`;
+  } else {
+    const rows = [['Especie', p.species], ['Raza', p.breed], ['Sexo', p.sex], ['Nacimiento', p.birthDate ? `${fmtDate(p.birthDate)} · ${ageOf(p.birthDate)}` : ''], ['Color', p.color], ['Microchip', p.chip], ['Esterilizado', p.sterilized ? 'Sí' : 'No']];
+    body = `<div class="glass list rise">${rows.map(([k, v]) => `<div class="row kv"><span class="muted">${k}</span><b class="${k === 'Microchip' ? 'mono' : ''}">${esc(v || '—')}</b></div>`).join('')}</div>
+      ${admin && owner ? `<div class="sec-head"><h2>Propietario</h2></div><a class="glass row-card rise" style="--i:1" href="#/client/${owner.id}">${userAvatar(owner, 44)}<span class="grow"><b>${esc(owner.name)}</b><small class="muted">${esc(owner.phone || owner.email || '')}</small></span>${I.chevron}</a>` : ''}
+      <button class="btn glass-btn block gap-top" data-act="edit-pet" data-id="${id}">${I.edit} Editar ficha</button>`;
+  }
+  return {
+    tabbar: true, cls: 'pet',
+    html: `<div class="page">
+      ${nav(p.name, { back: true, right: `<button class="nav-btn" data-act="edit-pet" data-id="${id}" aria-label="Editar">${I.edit}</button>` })}
+      <div class="pet-hero rise" style="--g:${speciesGrad(p.species)}" data-tilt>
+        <span class="pet-hero-glare"></span>
+        <div class="pet-hero-top">${petAvatar(p, 96, true)}
+          <div class="pet-hero-id"><small>${esc(p.species)}${p.breed ? ' · ' + esc(p.breed) : ''}</small><h2>${esc(p.name)}</h2>${admin ? `<small>de ${esc(ownerName(p))}</small>` : ''}</div></div>
+        <div class="pet-stats">
+          <span><small>Edad</small><b>${ageOf(p.birthDate) || '—'}</b></span>
+          <span><small>Peso</small><b>${lastW ? String(lastW.kg).replace('.', ',') + ' kg' : '—'}</b></span>
+          <span><small>Sexo</small><b>${esc(p.sex || '—')}</b></span>
+        </div>
+        ${p.chip ? `<div class="pet-chip mono">CHIP ${esc(p.chip.replace(/(\d{3})(?=\d)/g, '$1 '))}</div>` : ''}
+      </div>
+      <div class="pet-actions rise" style="--i:1">
+        <a class="glass action" href="#/chat/${id}">${I.chat}<span>Chat</span>${(admin ? p.unreadAdmin : p.unreadOwner) ? `<b class="badge">${admin ? p.unreadAdmin : p.unreadOwner}</b>` : ''}</a>
+        <button class="glass action" data-act="req-appt" data-pet="${id}">${I.calendar}<span>Cita</span></button>
+        ${admin ? `<button class="glass action" data-act="add-record" data-pet="${id}">${I.doc}<span>Documento</span></button>` : `<button class="glass action" data-act="add-weight" data-pet="${id}">${I.scale}<span>Peso</span></button>`}
+        ${p.pendingAmount ? `<span class="glass action warn">${I.invoice}<span>${fmtMoney(p.pendingAmount)}</span></span>` : ''}
+      </div>
+      ${seg('petTab', tab, [['cartilla', 'Cartilla'], ['salud', 'Salud'], ['ficha', 'Ficha']])}
+      <div class="tab-body">${body}</div>
+    </div>`,
+  };
+}
+function timelineItem(p, r, i) {
+  const t = RECORD_TYPES[r.type] || RECORD_TYPES.otro;
+  const s = r.type === 'vacuna' ? vaccineStatus(r) : null;
+  return `<button class="tl-item rise" style="--i:${Math.min(i, 8)};--c:${t.color}" data-act="open-record" data-pet="${p.id}" data-rec="${r.id}">
+    <span class="tl-dot">${I[t.icon]}</span>
+    <span class="glass tl-card">
+      <span class="tl-top"><small class="tl-type">${t.label}</small><small class="muted">${fmtDate(r.date)}</small></span>
+      <b>${esc(r.title)}</b>
+      ${r.notes ? `<small class="tl-notes">${esc(r.notes)}</small>` : ''}
+      <span class="tl-foot">
+        ${r.type === 'factura' ? `<b class="money">${fmtMoney(r.amount)}</b><span class="pill ${r.paid ? 'st-confirmada' : 'st-pendiente'}">${r.paid ? 'Pagada' : 'Pendiente'}</span>` : ''}
+        ${s ? `<span class="pill vac-${s.cls}">Próxima: ${s.text}</span>` : ''}
+        ${(r.files || []).length ? `<span class="pill neutral">${I.clip}${r.files.length}</span>` : ''}
+      </span>
+    </span></button>`;
+}
+function recordRow(p, r) {
+  const t = RECORD_TYPES[r.type] || RECORD_TYPES.otro;
+  return `<button class="row" data-act="open-record" data-pet="${p.id}" data-rec="${r.id}">
+    <span class="row-ico" style="--c:${t.color}">${I[t.icon]}</span>
+    <span class="grow"><b>${esc(r.title)}</b><small class="muted">${esc(p.name)} · ${t.label} · ${fmtDate(r.date, { day: 'numeric', month: 'short' })}</small></span>${I.chevron}</button>`;
+}
+function weightChart(ws) {
+  if (!ws.length) return '<p class="muted pad-s">Registra el peso para ver su evolución.</p>';
+  const pts = ws.slice().sort((a, b) => a.date.localeCompare(b.date)).slice(-12);
+  const W = 320, H = 130, P = 16;
+  const ys = pts.map((p) => +p.kg);
+  let min = Math.min(...ys), max = Math.max(...ys);
+  if (max - min < 0.5) { min -= 0.5; max += 0.5; }
+  const x = (i) => P + (pts.length === 1 ? (W - 2 * P) / 2 : (i * (W - 2 * P)) / (pts.length - 1));
+  const y = (v) => H - P - ((v - min) / (max - min)) * (H - 2 * P);
+  const d = pts.map((p, i) => `${i ? 'L' : 'M'}${x(i).toFixed(1)} ${y(+p.kg).toFixed(1)}`).join(' ');
+  const area = `${d} L${x(pts.length - 1).toFixed(1)} ${H} L${x(0).toFixed(1)} ${H} Z`;
+  const last = pts[pts.length - 1], prev = pts[pts.length - 2];
+  const delta = prev ? (+last.kg - +prev.kg) : 0;
+  return `<div class="weight-sum"><b>${String(last.kg).replace('.', ',')} kg</b>${prev ? `<span class="pill ${delta > 0 ? 'up' : delta < 0 ? 'down' : 'neutral'}">${delta > 0 ? '+' : ''}${delta.toFixed(1).replace('.', ',')} kg</span>` : ''}<small class="muted">${fmtDate(last.date)}</small></div>
+    <svg class="chart" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img" aria-label="Evolución del peso">
+      <defs><linearGradient id="wg" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="var(--accent)" stop-opacity=".35"/><stop offset="1" stop-color="var(--accent)" stop-opacity="0"/></linearGradient></defs>
+      <path d="${area}" fill="url(#wg)"/>
+      <path class="line" d="${d}" fill="none" stroke="var(--accent)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke"/>
+      ${pts.map((p, i) => `<circle cx="${x(i).toFixed(1)}" cy="${y(+p.kg).toFixed(1)}" r="${i === pts.length - 1 ? 4.5 : 2.5}" fill="${i === pts.length - 1 ? 'var(--accent)' : 'var(--surface-solid)'}" stroke="var(--accent)" stroke-width="2" vector-effect="non-scaling-stroke"/>`).join('')}
+    </svg>
+    <div class="chart-x">${pts.map((p) => `<small>${parseISO(p.date).toLocaleDateString('es-ES', { month: 'short' }).replace('.', '')}</small>`).join('')}</div>`;
+}
+
+/* =========================================================
+ * Chat
+ * ========================================================= */
+const QUICK = ['¡Hola! ¿En qué podemos ayudarte?', 'Te hemos subido el documento a la cartilla.', 'Pásate por la clínica cuando puedas.', '¿Puedes enviarnos una foto?', 'Tu cita está confirmada.'];
+function ChatView(petId) {
+  const p = petById(petId);
+  if (!p) return { tabbar: false, cls: 'chat', html: `<div class="page">${nav('Chat', { back: true })}${empty('chat', 'Conversación no disponible', 'Este animal ya no existe.')}</div>` };
+  watchChat(petId);
+  const msgs = S.msgs[petId];
+  const admin = isAdmin();
+  const otherRead = admin ? p.readByOwnerAt || 0 : p.readByAdminAt || 0;
+  const mine = (m) => m.from === S.user.uid || (admin && m.fromAdmin);
+  const lastMine = msgs ? [...msgs].reverse().find(mine) : null;
+  let html = '', lastDay = '';
+  (msgs || []).forEach((m, i) => {
+    const day = new Date(m.createdAt).toDateString();
+    if (day !== lastDay) {
+      const cs = chatStamp(m.createdAt);
+      const label = cs === fmtTime(m.createdAt) ? 'Hoy' : cs === 'Ayer' ? 'Ayer' : new Date(m.createdAt).toLocaleDateString('es-ES', { weekday: 'long', day: 'numeric', month: 'long' });
+      html += `<div class="day-sep"><span>${label}</span></div>`;
+      lastDay = day;
+    }
+    const me = mine(m);
+    const next = msgs[i + 1];
+    const tail = !next || mine(next) !== me || next.createdAt - m.createdAt > 300000;
+    const files = (m.files || []).map((f) => {
+      const k = fileKind(f.type);
+      const data = esc(JSON.stringify(f));
+      return k === 'image' ? `<button class="msg-img" data-act="open-file" data-file="${data}"><img data-file="${data}" alt=""></button>`
+        : `<button class="msg-file" data-act="open-file" data-file="${data}"><span class="file-ico ${k}">${k === 'pdf' ? 'PDF' : I.doc}</span><span><b>${esc(f.name)}</b><small>${fmtSize(f.size || 0)}</small></span></button>`;
+    }).join('');
+    html += `<div class="msg ${me ? 'me' : 'them'}${tail ? ' tail' : ''}" data-id="${m.id}">
+      ${files}${m.text ? `<div class="bubble">${linkify(esc(m.text))}<time>${fmtTime(m.createdAt)}</time></div>` : ''}
+      ${m === lastMine && otherRead >= m.createdAt ? `<small class="seen">${I.checks} Visto</small>` : ''}
+    </div>`;
+  });
+  const title = admin ? `${p.name} · ${ownerName(p)}` : p.name;
+  return {
+    tabbar: false, cls: 'chat',
+    html: `<div class="chat-page">
+      <header class="chat-head glass">
+        <button class="nav-back" data-act="back">${I.back}</button>
+        <a href="#/pet/${p.id}" class="chat-who">${admin ? petAvatar(p, 38) : clinicAvatar(38)}<span><b>${esc(admin ? title : clinicName())}</b><small>${admin ? esc(p.species + (p.breed ? ' · ' + p.breed : '')) : `sobre ${esc(p.name)}`}</small></span></a>
+        <a href="#/pet/${p.id}" class="chat-pet">${admin ? userAvatar(userById(p.ownerId), 34) : petAvatar(p, 34)}</a>
+      </header>
+      <div class="msgs" id="msgs">
+        <div class="chat-intro">${admin ? petAvatar(p, 64, true) : clinicAvatar(64)}<b>${esc(admin ? title : clinicName())}</b><small class="muted">${admin ? 'Conversación privada con el propietario' : `Conversación privada sobre ${esc(p.name)}. Te respondemos lo antes posible.`}</small></div>
+        ${msgs === undefined ? '<div class="sk sk-row"></div>' : html}
+      </div>
+      <div class="composer-wrap">
+        ${admin ? `<div class="quick-replies no-scrollbar">${QUICK.map((q) => `<button class="chip" data-act="quick" data-text="${esc(q)}">${esc(q)}</button>`).join('')}</div>` : ''}
+        ${ui.chatFiles.length ? `<div class="pending-files">${ui.chatFiles.map((f, i) => `<span class="pfile">${fileKind(f.type) === 'image' ? I.image : I.doc}<span>${esc(f.name)}</span><button data-act="chat-unattach" data-i="${i}">${I.close}</button></span>`).join('')}</div>` : ''}
+        <form class="composer glass" id="composer">
+          <button type="button" class="comp-btn" data-act="chat-attach" aria-label="Adjuntar">${I.plus}</button>
+          <textarea name="text" rows="1" data-keep="chat-${p.id}" data-auto placeholder="Mensaje"></textarea>
+          <button class="comp-send${ui.sending ? ' loading' : ''}" aria-label="Enviar">${I.send}</button>
+          <input type="file" id="chat-file" multiple accept="image/*,application/pdf,.doc,.docx" hidden>
+        </form>
+      </div>
+    </div>`,
+    mount({ isNav, nearBottom, opts }) {
+      B.markThreadRead(p);
+      if (isNav || nearBottom || opts.chatNew) {
+        requestAnimationFrame(() => scrollTo({ top: document.body.scrollHeight, behavior: isNav ? 'instant' : 'smooth' }));
+        if (opts.chatNew && !isNav) { const last = $('.msg:last-of-type'); last && last.classList.add('pop'); }
+      }
+      const f = $('#composer');
+      const ta = f.text;
+      ta.oninput = () => autosize(ta);
+      ta.onkeydown = (e) => { if (e.key === 'Enter' && !e.shiftKey && matchMedia('(pointer:fine)').matches) { e.preventDefault(); f.requestSubmit(); } };
+      $('#chat-file').onchange = (e) => { ui.chatFiles.push(...Array.from(e.target.files)); e.target.value = ''; schedule(); };
+      f.onsubmit = async (e) => {
+        e.preventDefault();
+        const text = ta.value;
+        if ((!text.trim() && !ui.chatFiles.length) || ui.sending) return;
+        const files = ui.chatFiles.slice();
+        ui.sending = true; ta.value = ''; ui.chatFiles = []; autosize(ta); haptic(6);
+        schedule();
+        try { await B.sendMessage(p, { text, files }); }
+        catch (ex) { toast(ex.message, 'error'); ta.value = text; ui.chatFiles = files; }
+        ui.sending = false; schedule({ chatNew: true });
+      };
+    },
+  };
+}
+const linkify = (s) => s.replace(/(https?:\/\/[^\s<]+)/g, '<a href="$1" target="_blank" rel="noopener">$1</a>').replace(/\n/g, '<br>');
+
+/* =========================================================
+ * CLÍNICA (admin)
+ * ========================================================= */
+function adminView(r) {
+  switch (r.name) {
+    case 'inbox': return AdminInbox();
+    case 'chat': return ChatView(r.id);
+    case 'clients': return AdminClients();
+    case 'client': return AdminClient(r.id);
+    case 'pet': return PetView(r.id);
+    case 'agenda': return AdminAgenda();
+    case 'settings': return AdminSettings();
+    default: return AdminHome();
+  }
+}
+
+function AdminHome() {
+  const t = todayISO();
+  const clients = S.users.filter((u) => u.id !== S.user.uid);
+  const unread = S.pets.reduce((s, p) => s + (p.unreadAdmin || 0), 0);
+  const pendingAppts = S.appts.filter((a) => a.status === 'pendiente');
+  const todayAppts = S.appts.filter((a) => a.date === t && ['confirmada', 'pendiente'].includes(a.status));
+  const money = S.pets.reduce((s, p) => s + (p.pendingAmount || 0), 0);
+  const chats = S.pets.filter((p) => p.lastMessageAt).sort((a, b) => (b.unreadAdmin || 0) - (a.unreadAdmin || 0) || b.lastMessageAt - a.lastMessageAt).slice(0, 4);
+  const stat = (href, icon, color, n, label, m = false, i = 0) => `<a href="${href}" class="glass stat rise" style="--i:${i};--c:${color}"><span class="stat-ico">${I[icon]}</span><b data-count="${n}" ${m ? 'data-money="1"' : ''}>${m ? fmtMoney(n) : n}</b><small>${label}</small></a>`;
+  return {
+    tabbar: true, cls: 'dash',
+    html: `<div class="page wide">
+      ${nav(`${greeting()}`, { sub: `<span class="cap">${new Date().toLocaleDateString('es-ES', { weekday: 'long', day: 'numeric', month: 'long' })}</span> · Panel de ${esc(clinicName())}`, right: `<a class="nav-av" href="#/settings">${clinicAvatar(34)}</a>` })}
+      <div class="stats">
+        ${stat('#/inbox', 'chat', '#0a84ff', unread, 'Mensajes sin leer', false, 0)}
+        ${stat('#/agenda', 'calendar', '#ff9f0a', pendingAppts.length, 'Citas por confirmar', false, 1)}
+        ${stat('#/clients', 'people', '#30d158', clients.length, 'Clientes', false, 2)}
+        ${stat('#/clients', 'paw', '#bf5af2', S.pets.length, 'Animales', false, 3)}
+        ${stat('#/clients', 'euro', '#ff375f', money, 'Pendiente de cobro', true, 4)}
+      </div>
+      <div class="cols">
+        <section class="sec">
+          <div class="sec-head"><h2>Hoy</h2><a href="#/agenda">Agenda</a></div>
+          <div class="stack">${todayAppts.map((a, i) => apptCard(a, i)).join('') || `<div class="glass row-card rise muted-card">${I.calendar}<span>No hay citas para hoy.</span></div>`}
+          ${pendingAppts.filter((a) => a.date !== t).slice(0, 3).map((a, i) => apptCard(a, i + 2)).join('')}</div>
+        </section>
+        <section class="sec">
+          <div class="sec-head"><h2>Conversaciones</h2><a href="#/inbox">Ver todas</a></div>
+          ${chats.length ? `<div class="glass list rise">${chats.map(threadRow).join('')}</div>` : `<div class="glass row-card rise muted-card">${I.chat}<span>Aún no hay mensajes.</span></div>`}
+        </section>
+      </div>
+    </div>`,
+  };
+}
+
+function AdminInbox() {
+  const q = ui.q.toLowerCase();
+  const list = S.pets.filter((p) => !q || (p.name + ' ' + ownerName(p)).toLowerCase().includes(q))
+    .sort((a, b) => (b.unreadAdmin ? 1 : 0) - (a.unreadAdmin ? 1 : 0) || (b.lastMessageAt || 0) - (a.lastMessageAt || 0));
+  const withMsgs = list.filter((p) => p.lastMessageAt), without = list.filter((p) => !p.lastMessageAt);
+  return {
+    tabbar: true, cls: 'inbox',
+    html: `<div class="page">
+      ${nav('Mensajes')}
+      ${searchBox('Buscar por animal o cliente')}
+      ${withMsgs.length ? `<div class="glass list rise">${withMsgs.map(threadRow).join('')}</div>` : empty('chat', 'Bandeja vacía', 'Cuando un cliente escriba sobre su animal, la conversación aparecerá aquí.')}
+      ${without.length ? `<div class="sec-head"><h2>Iniciar conversación</h2></div><div class="glass list rise" style="--i:1">${without.map(threadRow).join('')}</div>` : ''}
+    </div>`,
+  };
+}
+const searchBox = (ph) => `<label class="search glass rise">${I.search}<input data-keep="search" data-act-input="search" value="${esc(ui.q)}" placeholder="${esc(ph)}" autocomplete="off"></label>`;
+
+function AdminClients() {
+  const q = ui.q.toLowerCase();
+  const clients = S.users.filter((u) => u.id !== S.user.uid)
+    .map((u) => ({ u, pets: S.pets.filter((p) => p.ownerId === u.id) }))
+    .filter(({ u, pets }) => !q || [u.name, u.email, u.phone, ...pets.map((p) => p.name + ' ' + p.species + ' ' + (p.chip || ''))].join(' ').toLowerCase().includes(q))
+    .sort((a, b) => (a.u.name || '').localeCompare(b.u.name || ''));
+  return {
+    tabbar: true, cls: 'clients',
+    html: `<div class="page">
+      ${nav('Clientes', { sub: `${clients.length} ${clients.length === 1 ? 'cliente' : 'clientes'} · ${S.pets.length} animales` })}
+      ${searchBox('Nombre, teléfono, animal o microchip')}
+      ${clients.length ? `<div class="glass list rise">${clients.map(({ u, pets }) => `<a class="row" href="#/client/${u.id}">
+          ${userAvatar(u, 46)}
+          <span class="grow"><b>${esc(u.name || 'Sin nombre')}</b><small class="muted">${esc(u.phone || u.email || '')}</small></span>
+          <span class="pet-stack">${pets.slice(0, 4).map((p) => petAvatar(p, 28)).join('')}</span>${I.chevron}</a>`).join('')}</div>`
+        : empty('people', 'Sin clientes', 'Cuando alguien cree su cuenta en la app, aparecerá aquí.')}
+    </div>`,
+  };
+}
+
+function AdminClient(uid) {
+  const u = userById(uid);
+  if (!u) return { tabbar: true, html: `<div class="page">${nav('Cliente', { back: true })}${empty('person', 'No encontrado', 'Este cliente ya no existe.')}</div>` };
+  const pets = S.pets.filter((p) => p.ownerId === uid);
+  const appts = S.appts.filter((a) => a.ownerId === uid && a.date >= todayISO() && ['pendiente', 'confirmada'].includes(a.status));
+  const owed = pets.reduce((s, p) => s + (p.pendingAmount || 0), 0);
+  return {
+    tabbar: true, cls: 'client',
+    html: `<div class="page">
+      ${nav(u.name || 'Cliente', { back: true })}
+      <div class="glass profile-card rise">${userAvatar(u, 72)}<div><h2>${esc(u.name)}</h2>
+        <p class="muted">Cliente desde ${new Date(u.createdAt || Date.now()).toLocaleDateString('es-ES', { month: 'long', year: 'numeric' })}</p>
+        <div class="contact-btns">${u.phone ? `<button class="chip" data-act="copy" data-text="${esc(u.phone)}">${I.phone}${esc(u.phone)}</button>` : ''}${u.email ? `<button class="chip" data-act="copy" data-text="${esc(u.email)}">${I.mail}${esc(u.email)}</button>` : ''}</div></div></div>
+      ${owed ? `<div class="glass row-card warn-card rise" style="--i:1"><span class="row-ico" style="--c:#ff9f0a">${I.invoice}</span><span class="grow"><b>Pendiente de cobro</b><small class="muted">Suma de facturas sin pagar</small></span><b class="money">${fmtMoney(owed)}</b></div>` : ''}
+      <div class="sec-head"><h2>Animales</h2><button class="link" data-act="add-pet" data-owner="${uid}">${I.plus} Añadir</button></div>
+      <div class="pet-grid">${pets.map((p, i) => petCard(p, i)).join('') || '<p class="muted">Este cliente aún no ha añadido animales.</p>'}</div>
+      ${appts.length ? `<div class="sec-head"><h2>Próximas citas</h2></div><div class="stack">${appts.map((a, i) => apptCard(a, i)).join('')}</div>` : ''}
+    </div>`,
+  };
+}
+
+function AdminAgenda() {
+  const t = todayISO();
+  const days = Array.from({ length: 21 }, (_, i) => { const d = new Date(); d.setDate(d.getDate() + i - 3); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; });
+  const pending = S.appts.filter((a) => a.status === 'pendiente');
+  const dayList = S.appts.filter((a) => a.date === ui.agendaDay && a.status !== 'cancelada' && a.status !== 'rechazada');
+  return {
+    tabbar: true, cls: 'agenda',
+    html: `<div class="page">
+      ${nav('Agenda', { right: `<button class="nav-btn" data-act="req-appt" aria-label="Nueva cita">${I.plus}</button>` })}
+      <div class="days no-scrollbar rise">${days.map((d) => {
+        const dt = parseISO(d); const n = S.appts.filter((a) => a.date === d && ['pendiente', 'confirmada'].includes(a.status)).length;
+        return `<button class="day${d === ui.agendaDay ? ' active' : ''}${d === t ? ' today' : ''}" data-act="agenda-day" data-day="${d}"><small>${dt.toLocaleDateString('es-ES', { weekday: 'short' }).replace('.', '')}</small><b>${dt.getDate()}</b>${n ? `<i>${n}</i>` : '<i class="none"></i>'}</button>`;
+      }).join('')}</div>
+      ${pending.length ? `<div class="sec-head"><h2>Por confirmar</h2><span class="badge">${pending.length}</span></div><div class="stack">${pending.map((a, i) => apptCard(a, i)).join('')}</div>` : ''}
+      <div class="sec-head"><h2 class="cap">${fmtDay(ui.agendaDay)}</h2></div>
+      <div class="stack">${dayList.map((a, i) => apptCard(a, i)).join('') || empty('calendar', 'Día libre', 'No hay citas este día.', '<button class="btn glass-btn" data-act="req-appt">Crear cita</button>')}</div>
+    </div>`,
+    mount({ isNav }) { const a = $('.day.active'); if (a && isNav) a.scrollIntoView({ inline: 'center', block: 'nearest' }); },
+  };
+}
+
+function AdminSettings() {
+  const c = S.clinic;
+  return {
+    tabbar: true, cls: 'settings',
+    html: `<div class="page">
+      ${nav('Ajustes')}
+      <div class="glass profile-card rise">${clinicAvatar(72)}<div><h2>${esc(clinicName())}</h2><p class="muted">${esc(S.user.email)} · Administración</p></div></div>
+      <div class="sec-head"><h2>Datos de la clínica</h2></div>
+      <p class="muted small-gap">Los clientes los ven en su inicio y en su perfil.</p>
+      <form class="glass list form-list rise" style="--i:1" id="clinic-form">
+        <label class="row field-row"><span>Nombre</span><input name="name" data-keep="c-name" value="${esc(c.name || clinicName())}"></label>
+        <label class="row field-row"><span>Teléfono</span><input name="phone" data-keep="c-phone" type="tel" value="${esc(c.phone || '')}" placeholder="+34 …"></label>
+        <label class="row field-row"><span>Urgencias</span><input name="emergency" data-keep="c-em" type="tel" value="${esc(c.emergency || '')}" placeholder="Teléfono 24 h"></label>
+        <label class="row field-row"><span>Correo</span><input name="email" data-keep="c-mail" type="email" value="${esc(c.email || '')}"></label>
+        <label class="row field-row"><span>Dirección</span><input name="address" data-keep="c-addr" value="${esc(c.address || '')}"></label>
+        <label class="row field-row"><span>Horario</span><input name="hours" data-keep="c-hours" value="${esc(c.hours || '')}" placeholder="L–V 9:00–20:00"></label>
+        <div class="row"><button class="btn primary sm ml-auto">Guardar</button></div>
+      </form>
+      <div class="glass list rise" style="--i:2">
+        <div class="row"><span class="row-ico" style="--c:${B.mode === 'demo' ? '#ff9f0a' : '#30d158'}">${I.shield}</span><span class="grow"><b>${B.mode === 'demo' ? 'Modo demostración' : 'Conectado a Firebase'}</b><small class="muted">${B.mode === 'demo' ? 'Conecta Firebase para usarla con clientes reales.' : 'Datos en tiempo real en todos los dispositivos.'}</small></span></div>
+        <button class="row" data-act="logout"><span class="row-ico" style="--c:#8e8e93">${I.logout}</span><span class="grow"><b>Cerrar sesión</b></span></button>
+        ${B.mode === 'demo' ? `<button class="row" data-act="reset-demo"><span class="row-ico" style="--c:#ff9f0a">${I.sparkle}</span><span class="grow"><b>Restablecer la demo</b></span></button>` : ''}
+      </div>
+    </div>`,
+    mount() {
+      $('#clinic-form').onsubmit = async (e) => {
+        e.preventDefault();
+        const f = e.target;
+        try { await B.saveClinic(Object.fromEntries(['name', 'phone', 'emergency', 'email', 'address', 'hours'].map((k) => [k, f[k].value.trim()]))); toast('Datos de la clínica guardados'); }
+        catch (ex) { toast(ex.message, 'error'); }
+      };
+    },
+  };
+}
+
+/* =========================================================
+ * Hojas: animal, documento, archivo, cita, peso
+ * ========================================================= */
+function petSheet(pet, ownerId) {
+  const p = pet || { species: 'Perro', sex: 'Macho', allergies: [], sterilized: false };
+  let photo = p.photo || '';
+  const species = Object.keys(SPECIES);
+  const h = openSheet(`
+    <div class="sheet-head"><button class="sh-btn" data-close>Cancelar</button><h3>${pet ? 'Editar ficha' : 'Nuevo animal'}</h3><button class="sh-btn bold" form="pet-form">Guardar</button></div>
+    <form class="form" id="pet-form">
+      <label class="photo-pick" style="--g:${speciesGrad(p.species)}"><span class="photo-prev">${photo ? `<img src="${esc(photo)}" alt="">` : I.camera}</span><span>Foto</span><input type="file" accept="image/*" hidden id="pet-photo"></label>
+      <label class="field"><span>Nombre</span><input name="name" value="${esc(p.name || '')}" required autofocus placeholder="Toby"></label>
+      <div class="field"><span>Especie</span><div class="chips wrap">${species.map((s) => `<button type="button" class="chip${p.species === s ? ' active' : ''}" data-species="${s}">${s}</button>`).join('')}</div></div>
+      <div class="grid2">
+        <label class="field"><span>Raza</span><input name="breed" value="${esc(p.breed || '')}" placeholder="Mestizo"></label>
+        <label class="field"><span>Color</span><input name="color" value="${esc(p.color || '')}" placeholder="Negro"></label>
+      </div>
+      <div class="grid2">
+        <div class="field"><span>Sexo</span>${seg('sex', p.sex || 'Macho', [['Macho', 'Macho'], ['Hembra', 'Hembra']])}</div>
+        <label class="field"><span>Nacimiento</span><input name="birthDate" type="date" value="${esc(p.birthDate || '')}" max="${todayISO()}"></label>
+      </div>
+      <label class="field"><span>Microchip</span><input name="chip" inputmode="numeric" value="${esc(p.chip || '')}" placeholder="15 dígitos" class="mono"></label>
+      <label class="switch-row"><span>Esterilizado/a</span><input type="checkbox" name="sterilized" ${p.sterilized ? 'checked' : ''}><i class="switch"></i></label>
+      <label class="field"><span>Alergias <i>(separadas por comas)</i></span><input name="allergies" value="${esc((p.allergies || []).join(', '))}" placeholder="Pollo, penicilina"></label>
+      <label class="field"><span>Notas</span><textarea name="notes" rows="3" placeholder="Carácter, cuidados especiales…">${esc(p.notes || '')}</textarea></label>
+      ${pet ? '<button type="button" class="btn danger-soft block" data-del>Eliminar animal</button>' : ''}
+    </form>`);
+  const el = h.el, f = $('#pet-form', el);
+  let sp = p.species, sex = p.sex || 'Macho';
+  $$('[data-species]', el).forEach((b) => b.onclick = () => { sp = b.dataset.species; $$('[data-species]', el).forEach((x) => x.classList.toggle('active', x === b)); $('.photo-pick', el).style.setProperty('--g', speciesGrad(sp)); haptic(5); });
+  $$('.seg-btn', el).forEach((b) => b.onclick = () => { sex = b.dataset.val; $$('.seg-btn', el).forEach((x) => x.classList.toggle('active', x === b)); layoutSeg($('.seg', el)); haptic(5); });
+  requestAnimationFrame(() => $$('.seg', el).forEach(layoutSeg));
+  $('[data-close]', el).onclick = () => h.close();
+  $('#pet-photo', el).onchange = async (e) => {
+    const file = e.target.files[0]; if (!file) return;
+    photo = await compressImage(file, 520, 0.82);
+    $('.photo-prev', el).innerHTML = `<img src="${photo}" alt="">`;
+  };
+  const del = $('[data-del]', el);
+  if (del) del.onclick = async () => {
+    if (!(await confirmSheet(`¿Eliminar a ${pet.name}? Se perderá su ficha.`, 'Eliminar animal'))) return;
+    try { await B.deletePet(pet.id); h.close(); toast(`${pet.name} eliminado`); go(isAdmin() ? '#/clients' : '#/pets'); } catch (ex) { toast(ex.message, 'error'); }
+  };
+  f.onsubmit = async (e) => {
+    e.preventDefault();
+    if (!f.name.value.trim()) return f.name.focus();
+    const data = {
+      name: f.name.value.trim(), species: sp, breed: f.breed.value.trim(), color: f.color.value.trim(), sex, birthDate: f.birthDate.value,
+      chip: f.chip.value.replace(/\s/g, ''), sterilized: f.sterilized.checked, notes: f.notes.value.trim(), photo,
+      allergies: f.allergies.value.split(',').map((x) => x.trim()).filter(Boolean),
+    };
+    if (pet) data.id = pet.id;
+    else if (ownerId) data.ownerId = ownerId;
+    try {
+      const id = await B.savePet(data);
+      h.close();
+      if (!pet) { confetti(); toast(`¡Bienvenido/a, ${data.name}!`); go('#/pet/' + id); } else toast('Ficha guardada');
+    } catch (ex) { toast(ex.message, 'error'); }
+  };
+}
+
+function recordSheet(pet, rec) {
+  const r = rec ? { ...rec } : { type: 'diagnostico', date: todayISO(), files: [] };
+  const newFiles = [];
+  let keep = (r.files || []).slice();
+  const h = openSheet(`
+    <div class="sheet-head"><button class="sh-btn" data-close>Cancelar</button><h3>${rec ? 'Editar documento' : 'Añadir a la cartilla'}</h3><button class="sh-btn bold" form="rec-form">Guardar</button></div>
+    <form class="form" id="rec-form">
+      <div class="pet-line">${petAvatar(pet, 30)}<b>${esc(pet.name)}</b><small class="muted">${esc(ownerName(pet))}</small></div>
+      <div class="type-grid">${Object.entries(RECORD_TYPES).map(([k, t]) => `<button type="button" class="type-btn${r.type === k ? ' active' : ''}" data-type="${k}" style="--c:${t.color}">${I[t.icon]}<span>${t.label}</span></button>`).join('')}</div>
+      <label class="field"><span>Título</span><input name="title" value="${esc(r.title || '')}" required placeholder="Ej.: Otitis externa, Vacuna rabia, Factura 2025-014"></label>
+      <label class="field"><span>Fecha</span><input name="date" type="date" value="${esc(r.date || todayISO())}" required></label>
+      <div class="extra"></div>
+      <label class="field"><span>Descripción / indicaciones</span><textarea name="notes" rows="4" placeholder="Detalles, tratamiento, dosis…">${esc(r.notes || '')}</textarea></label>
+      <div class="field"><span>Archivos <i>(PDF, fotos, documentos · máx. 10 MB)</i></span>
+        <label class="drop no-drag">${I.clip}<b>Adjuntar archivos</b><small>Pulsa o arrastra aquí</small><input type="file" multiple accept="image/*,application/pdf,.doc,.docx,.xls,.xlsx" hidden id="rec-files"></label>
+        <div class="file-list" id="rec-file-list"></div>
+      </div>
+      <div class="progress" hidden><span></span></div>
+    </form>`, { wide: true });
+  const el = h.el, f = $('#rec-form', el);
+  $('[data-close]', el).onclick = () => h.close();
+  const extra = () => {
+    const box = $('.extra', el);
+    if (r.type === 'vacuna') box.innerHTML = `<label class="field"><span>Próxima dosis</span><input name="nextDate" type="date" value="${esc(r.nextDate || '')}"></label>`;
+    else if (r.type === 'factura') box.innerHTML = `<div class="grid2"><label class="field"><span>Importe (€)</span><input name="amount" type="number" step="0.01" min="0" value="${esc(r.amount ?? '')}" placeholder="0,00" required></label>
+      <label class="switch-row tall"><span>Pagada</span><input type="checkbox" name="paid" ${r.paid ? 'checked' : ''}><i class="switch"></i></label></div>`;
+    else box.innerHTML = '';
+  };
+  extra();
+  $$('.type-btn', el).forEach((b) => b.onclick = () => {
+    r.type = b.dataset.type; $$('.type-btn', el).forEach((x) => x.classList.toggle('active', x === b)); extra(); haptic(5);
+    if (!f.title.value) f.title.placeholder = RECORD_TYPES[r.type].label;
+  });
+  const list = () => {
+    $('#rec-file-list', el).innerHTML = [
+      ...keep.map((x, i) => `<span class="pfile">${fileKind(x.type) === 'image' ? I.image : I.doc}<span>${esc(x.name)}</span><small>${fmtSize(x.size || 0)}</small><button type="button" data-rm-keep="${i}">${I.close}</button></span>`),
+      ...newFiles.map((x, i) => `<span class="pfile new">${fileKind(x.type) === 'image' ? I.image : I.doc}<span>${esc(x.name)}</span><small>${fmtSize(x.size)}</small><button type="button" data-rm-new="${i}">${I.close}</button></span>`),
+    ].join('');
+    $$('[data-rm-keep]', el).forEach((b) => b.onclick = () => { keep.splice(+b.dataset.rmKeep, 1); list(); });
+    $$('[data-rm-new]', el).forEach((b) => b.onclick = () => { newFiles.splice(+b.dataset.rmNew, 1); list(); });
+  };
+  list();
+  const input = $('#rec-files', el), drop = $('.drop', el);
+  input.onchange = () => { newFiles.push(...input.files); input.value = ''; list(); };
+  drop.ondragover = (e) => { e.preventDefault(); drop.classList.add('over'); };
+  drop.ondragleave = () => drop.classList.remove('over');
+  drop.ondrop = (e) => { e.preventDefault(); drop.classList.remove('over'); newFiles.push(...e.dataTransfer.files); list(); };
+  f.onsubmit = async (e) => {
+    e.preventDefault();
+    const data = { type: r.type, title: f.title.value.trim(), date: f.date.value, notes: f.notes.value.trim(), files: keep };
+    if (!data.title) return f.title.focus();
+    if (rec) data.id = rec.id;
+    if (r.type === 'vacuna') data.nextDate = f.nextDate.value || '';
+    if (r.type === 'factura') { data.amount = Math.round((parseFloat(f.amount.value) || 0) * 100) / 100; data.paid = f.paid.checked; }
+    const prog = $('.progress', el), bar = $('.progress span', el);
+    prog.hidden = !newFiles.length;
+    $$('.sh-btn', el).forEach((b) => b.disabled = true);
+    try {
+      await B.saveRecord(pet, data, newFiles, (k) => { bar.style.width = Math.round(k * 100) + '%'; });
+      h.close();
+      toast(rec ? 'Documento actualizado' : `Añadido a la cartilla de ${pet.name}`);
+      if (!rec) confetti(innerWidth / 2, innerHeight * .6);
+    } catch (ex) { toast(ex.message, 'error'); $$('.sh-btn', el).forEach((b) => b.disabled = false); }
+  };
+}
+
+function recordView(pet, rec) {
+  const t = RECORD_TYPES[rec.type] || RECORD_TYPES.otro;
+  const s = rec.type === 'vacuna' ? vaccineStatus(rec) : null;
+  const admin = isAdmin();
+  const h = openSheet(`
+    <div class="rec-view">
+      <div class="rec-hero" style="--c:${t.color}"><span class="rec-ico">${I[t.icon]}</span><small>${t.label} · ${fmtDate(rec.date)}</small><h2>${esc(rec.title)}</h2>
+        <span class="rec-pet">${petAvatar(pet, 24)} ${esc(pet.name)}</span></div>
+      ${rec.type === 'factura' ? `<div class="invoice-box"><span><small>Importe</small><b>${fmtMoney(rec.amount)}</b></span>${admin ? `<label class="switch-row"><span>${rec.paid ? 'Pagada' : 'Pendiente'}</span><input type="checkbox" id="paid-toggle" ${rec.paid ? 'checked' : ''}><i class="switch"></i></label>` : `<span class="pill ${rec.paid ? 'st-confirmada' : 'st-pendiente'}">${rec.paid ? 'Pagada' : 'Pendiente de pago'}</span>`}</div>` : ''}
+      ${s ? `<div class="invoice-box"><span><small>Próxima dosis</small><b>${fmtDate(rec.nextDate)}</b></span><span class="pill vac-${s.cls}">${s.text}</span></div>` : ''}
+      ${rec.notes ? `<p class="rec-notes">${esc(rec.notes).replace(/\n/g, '<br>')}</p>` : ''}
+      ${(rec.files || []).length ? `<div class="file-grid">${rec.files.map(fileTile).join('')}</div>` : ''}
+      ${rec.type === 'vacuna' && rec.nextDate ? `<button class="btn glass-btn block" data-ics>${I.calendar} Recordatorio en mi calendario</button>` : ''}
+      ${admin ? `<div class="grid2"><button class="btn glass-btn" data-edit>${I.edit} Editar</button><button class="btn danger-soft" data-del>${I.trash} Eliminar</button></div>` : ''}
+    </div>`, { wide: true });
+  const el = h.el;
+  hydrateFiles(el);
+  const tg = $('#paid-toggle', el);
+  if (tg) tg.onchange = async () => { try { await B.saveRecord(pet, { ...rec, paid: tg.checked }); toast(tg.checked ? 'Factura marcada como pagada' : 'Factura pendiente'); tg.previousElementSibling.textContent = tg.checked ? 'Pagada' : 'Pendiente'; } catch (ex) { toast(ex.message, 'error'); } };
+  const ics = $('[data-ics]', el);
+  if (ics) ics.onclick = () => downloadBlob(new Blob([icsFor({ title: `Vacuna de ${pet.name}: ${rec.title}`, date: rec.nextDate, time: '10:00', location: S.clinic.address || clinicName() })], { type: 'text/calendar' }), `vacuna-${pet.name}.ics`);
+  const ed = $('[data-edit]', el);
+  if (ed) ed.onclick = () => { h.close(); setTimeout(() => recordSheet(pet, rec), 250); };
+  const del = $('[data-del]', el);
+  if (del) del.onclick = async () => {
+    if (!(await confirmSheet('¿Eliminar este documento de la cartilla?', 'Eliminar'))) return;
+    try { await B.deleteRecord(pet, rec); h.close(); toast('Documento eliminado'); } catch (ex) { toast(ex.message, 'error'); }
+  };
+}
+
+async function fileViewer(meta) {
+  const k = fileKind(meta.type);
+  const h = openSheet(`<div class="viewer"><div class="viewer-head"><b>${esc(meta.name)}</b><small class="muted">${fmtSize(meta.size || 0)}</small></div>
+    <div class="viewer-body"><div class="spinner"></div></div>
+    <div class="grid2"><button class="btn glass-btn" data-open>${I.download} Descargar</button><button class="btn primary" data-close>Cerrar</button></div></div>`, { wide: true, cls: 'tall' });
+  $('[data-close]', h.el).onclick = () => h.close();
+  try {
+    const url = await B.openFile(meta);
+    const body = $('.viewer-body', h.el);
+    if (k === 'image') body.innerHTML = `<img src="${url}" alt="${esc(meta.name)}">`;
+    else if (k === 'pdf') body.innerHTML = `<iframe src="${url}#toolbar=0&view=FitH" title="${esc(meta.name)}"></iframe>`;
+    else body.innerHTML = `<div class="empty"><div class="empty-ico">${I.doc}</div><p class="muted">Vista previa no disponible. Descárgalo para abrirlo.</p></div>`;
+    $('[data-open]', h.el).onclick = () => { const a = document.createElement('a'); a.href = url; a.download = meta.name; document.body.appendChild(a); a.click(); a.remove(); };
+  } catch (ex) { $('.viewer-body', h.el).innerHTML = `<p class="muted">${esc(ex.message)}</p>`; }
+}
+
+function apptSheet(petId) {
+  const admin = isAdmin();
+  const pets = S.pets;
+  if (!pets.length) { toast(admin ? 'Todavía no hay animales registrados.' : 'Primero añade a tu animal.', 'error'); if (!admin) petSheet(); return; }
+  const slots = ['09:00', '09:30', '10:00', '10:30', '11:00', '11:30', '12:00', '12:30', '13:00', '16:00', '16:30', '17:00', '17:30', '18:00', '18:30', '19:00', '19:30'];
+  let time = '';
+  const h = openSheet(`
+    <div class="sheet-head"><button class="sh-btn" data-close>Cancelar</button><h3>${admin ? 'Nueva cita' : 'Pedir cita'}</h3><button class="sh-btn bold" form="appt-form">${admin ? 'Crear' : 'Enviar'}</button></div>
+    <form class="form" id="appt-form">
+      <label class="field"><span>Animal</span><select name="petId">${pets.map((p) => `<option value="${p.id}" ${p.id === petId ? 'selected' : ''}>${esc(p.name)}${admin ? ' · ' + esc(ownerName(p)) : ''}</option>`).join('')}</select></label>
+      <label class="field"><span>Día</span><input name="date" type="date" min="${todayISO()}" value="${esc(admin ? ui.agendaDay : '')}" required></label>
+      <div class="field"><span>Hora</span><div class="slots">${slots.map((s) => `<button type="button" class="slot" data-slot="${s}">${s}</button>`).join('')}</div></div>
+      <label class="field"><span>Motivo</span><input name="reason" required placeholder="Vacunación, revisión, cojea…"></label>
+      ${admin ? '<label class="field"><span>Nota para el cliente <i>(opcional)</i></span><input name="note" placeholder="Venir en ayunas"></label>' : '<p class="tiny muted">La clínica revisará tu solicitud y te avisaremos en la app cuando la confirme.</p>'}
+    </form>`);
+  const el = h.el, f = $('#appt-form', el);
+  $('[data-close]', el).onclick = () => h.close();
+  const markTaken = () => {
+    const taken = S.appts.filter((a) => a.date === f.date.value && ['pendiente', 'confirmada'].includes(a.status)).map((a) => a.time);
+    $$('.slot', el).forEach((b) => { b.classList.toggle('taken', admin && taken.includes(b.dataset.slot)); });
+  };
+  f.date.onchange = markTaken; markTaken();
+  $$('.slot', el).forEach((b) => b.onclick = () => { time = b.dataset.slot; $$('.slot', el).forEach((x) => x.classList.toggle('active', x === b)); haptic(5); });
+  f.onsubmit = async (e) => {
+    e.preventDefault();
+    if (!f.date.value) return f.date.focus();
+    if (!time) { toast('Elige una hora', 'error'); return; }
+    const p = petById(f.petId.value);
+    const a = { petId: p.id, ownerId: p.ownerId, date: f.date.value, time, reason: f.reason.value.trim() || 'Consulta', status: admin ? 'confirmada' : 'pendiente', note: admin ? f.note.value.trim() : '' };
+    try {
+      await B.saveAppointment(a);
+      h.close();
+      toast(admin ? 'Cita creada' : 'Solicitud enviada. Te avisaremos al confirmarla.');
+      if (!admin) confetti(innerWidth / 2, innerHeight * .7);
+    } catch (ex) { toast(ex.message, 'error'); }
+  };
+}
+
+async function apptMenu(id) {
+  const a = S.appts.find((x) => x.id === id);
+  if (!a) return;
+  const p = petById(a.petId) || { name: '' };
+  const admin = isAdmin();
+  const acts = [];
+  if (admin && a.status === 'pendiente') acts.push({ label: 'Confirmar cita', icon: 'check', bold: true, value: 'confirmada' }, { label: 'Rechazar', icon: 'close', danger: true, value: 'rechazada' });
+  if (admin && a.status === 'confirmada') acts.push({ label: 'Marcar como completada', icon: 'checks', value: 'completada' });
+  if (admin && ['pendiente', 'confirmada'].includes(a.status)) acts.push({ label: 'Añadir nota para el cliente', icon: 'edit', value: 'note' });
+  if (['pendiente', 'confirmada'].includes(a.status)) acts.push({ label: 'Añadir a mi calendario', icon: 'calendar', value: 'ics' });
+  acts.push({ label: 'Abrir chat', icon: 'chat', value: 'chat' });
+  if (!admin && ['pendiente', 'confirmada'].includes(a.status)) acts.push({ label: 'Cancelar cita', icon: 'trash', danger: true, value: 'cancelada' });
+  const v = await actionSheet(`${a.reason} · ${p.name} · ${fmtDate(a.date, { day: 'numeric', month: 'long' })} ${a.time}`, acts);
+  if (!v) return;
+  try {
+    if (v === 'chat') return go('#/chat/' + a.petId);
+    if (v === 'ics') return downloadBlob(new Blob([icsFor({ title: `${clinicName()}: ${a.reason} (${p.name})`, date: a.date, time: a.time, description: a.note || '', location: S.clinic.address || '' })], { type: 'text/calendar' }), `cita-${p.name}.ics`);
+    if (v === 'note') {
+      const note = await promptSheet('Nota para el cliente', { label: 'Indicaciones', value: a.note || '', placeholder: 'Venir en ayunas, traer la cartilla…', ok: 'Guardar nota' });
+      if (note !== null) { await B.saveAppointment({ id, note }); toast('Nota guardada'); }
       return;
     }
-    if (route.name === 'login' || route.name === 'register') { setHash('#/'); return; }
+    if (v === 'cancelada' && !(await confirmSheet('¿Cancelar esta cita?', 'Cancelar cita'))) return;
+    await B.saveAppointment({ id, status: v });
+    toast({ confirmada: 'Cita confirmada', rechazada: 'Cita rechazada', completada: 'Cita completada', cancelada: 'Cita cancelada' }[v]);
+    if (v === 'confirmada') confetti();
+  } catch (ex) { toast(ex.message, 'error'); }
+}
 
-    const page = ROUTES[route.name] || (() => NotFound());
-    const { html, mount } = normalize(page(route));
-    app.innerHTML = Shell(html, route.name);
-    if (mount) mount();
-    hydrate();
+async function addWeight(petId) {
+  const p = petById(petId);
+  const v = await promptSheet(`Peso de ${p.name}`, { label: 'Kilogramos', type: 'number', placeholder: 'Ej.: 12,4', ok: 'Registrar' });
+  if (v === null) return;
+  const kg = parseFloat(String(v).replace(',', '.'));
+  if (!(kg > 0)) return toast('Escribe un peso válido', 'error');
+  try {
+    const ws = (p.weights || []).filter((w) => w.date !== todayISO()).concat({ date: todayISO(), kg: Math.round(kg * 100) / 100 });
+    await B.savePet({ id: petId, weights: ws });
+    toast(`Peso registrado: ${String(kg).replace('.', ',')} kg`);
+    ui.petTab = 'salud';
+  } catch (ex) { toast(ex.message, 'error'); }
+}
 
-    const key = route.parts.join('/');
-    if (key !== lastRoute) { window.scrollTo(0, 0); lastRoute = key; }
-  }
-  const normalize = (r) => (typeof r === 'string' ? { html: r } : r);
+async function pickPetForChat() {
+  const v = await actionSheet('¿Con qué animal?', S.pets.map((p) => ({ label: `${p.name} · ${ownerName(p)}`, value: p.id })));
+  if (v) go('#/chat/' + v);
+}
 
-  /* ======================================================
-   * Estructura (barra lateral, cabecera móvil, navegación inferior)
-   * ====================================================== */
-  function Shell(content, active) {
-    const notif = S.unreadNotifications(me.id);
-    const msgs = S.unreadMessages(me.id);
-    const pendingAppts = S.appointmentsFor(me.id).filter((a) => a.status === 'pendiente' && a.vetId === me.id).length;
-    const dot = (n) => (n ? `<span class="badge-count">${n > 9 ? '9+' : n}</span>` : '');
-    const item = (href, icon, label, key, extra = '') =>
-      `<a href="${href}" class="nav-item${active === key ? ' active' : ''}"><span class="nav-ico">${icon}${extra}</span><span class="nav-label">${label}</span></a>`;
+/* =========================================================
+ * Acciones (delegación)
+ * ========================================================= */
+const ACT = {
+  back: () => (history.length > 1 ? history.back() : go('#/')),
+  seg: (el) => { ui[el.dataset.seg] = el.dataset.val; if (el.dataset.seg === 'authTab') $('#auth-error') && ($('#auth-error').textContent = ''); haptic(5); const s = el.closest('.seg'); $$('.seg-btn', s).forEach((b) => b.classList.toggle('active', b === el)); layoutSeg(s); setTimeout(() => draw(false), 180); },
+  'rec-filter': (el) => { ui.recFilter = el.dataset.val; draw(false); },
+  demo: async (el) => { const a = B.demoAccounts.find((x) => x.email === el.dataset.email); el.classList.add('loading'); await B.signIn(a.email, a.password); },
+  forgot: async () => {
+    const email = await promptSheet('Recuperar contraseña', { label: 'Tu correo', type: 'email', value: ($('#auth-form') || {}).email?.value || '', ok: 'Enviar enlace' });
+    if (!email) return;
+    try { await B.resetPassword(email); toast('Te hemos enviado un correo para crear una nueva contraseña'); } catch (ex) { toast(ex.message, 'error'); }
+  },
+  'verify-check': async () => { const u = await B.refreshUser(); if (u && u.isAdmin) { toast('Correo verificado'); onAuth(u); } else toast('Todavía no aparece verificado. Abre el enlace del correo.', 'error'); },
+  'verify-resend': async () => { try { await B.resendVerification(); toast('Correo reenviado'); } catch (ex) { toast(ex.message, 'error'); } },
+  logout: async () => { if (await confirmSheet('¿Cerrar sesión?', 'Cerrar sesión')) { await B.signOut(); location.hash = '#/'; } },
+  'reset-demo': async () => { if (await confirmSheet('¿Restablecer la demo? Se borrarán los cambios de este navegador.', 'Restablecer')) { await B.resetDemo(); toast('Demo restablecida'); } },
+  'delete-account': async () => {
+    if (!(await confirmSheet('¿Eliminar tu cuenta? Se borrarán tus animales y citas.', 'Eliminar cuenta'))) return;
+    const pw = await promptSheet('Confirma tu contraseña', { label: 'Contraseña', type: 'password', ok: 'Eliminar definitivamente' });
+    if (!pw) return;
+    try { await B.deleteAccount(pw); toast('Cuenta eliminada'); } catch (ex) { toast(ex.message, 'error'); }
+  },
+  'add-pet': (el) => petSheet(null, el.dataset.owner),
+  'edit-pet': (el) => petSheet(petById(el.dataset.id)),
+  'add-record': (el) => recordSheet(petById(el.dataset.pet)),
+  'open-record': (el) => { const p = petById(el.dataset.pet); const r = (S.recs[p.id] || []).find((x) => x.id === el.dataset.rec); if (r) recordView(p, r); },
+  'open-file': (el) => fileViewer(JSON.parse(el.dataset.file)),
+  'req-appt': (el) => apptSheet(el.dataset.pet || (route().name === 'pet' ? route().id : '')),
+  'appt-menu': (el) => apptMenu(el.dataset.id),
+  'add-weight': (el) => addWeight(el.dataset.pet),
+  'agenda-day': (el) => { ui.agendaDay = el.dataset.day; haptic(4); draw(false); },
+  'chat-attach': () => $('#chat-file').click(),
+  'chat-unattach': (el) => { ui.chatFiles.splice(+el.dataset.i, 1); draw(false); },
+  quick: (el) => { const ta = $('#composer textarea'); ta.value = (ta.value ? ta.value + ' ' : '') + el.dataset.text; autosize(ta); ta.focus(); },
+  'new-chat': () => pickPetForChat(),
+  'profile-photo': () => $('#avatar-input').click(),
+  copy: async (el) => { try { await navigator.clipboard.writeText(el.dataset.text); toast('Copiado'); } catch (e) { toast(el.dataset.text); } },
+};
+document.addEventListener('click', (e) => {
+  const el = e.target.closest('[data-act]');
+  if (!el || !ACT[el.dataset.act]) return;
+  if (el.tagName === 'A' || el.type === 'submit') e.preventDefault();
+  ACT[el.dataset.act](el, e);
+});
+document.addEventListener('input', (e) => {
+  if (e.target.dataset.actInput === 'search') { ui.q = e.target.value; schedule(); }
+});
+// pulsación con rebote en botones y tarjetas
+document.addEventListener('pointerdown', (e) => {
+  const el = e.target.closest('.btn, .glass-btn, .quick-btn, .action, .row, .pet-card, .appt, .tab, .chip, .tl-card, .day, .slot, .type-btn, .stat');
+  if (!el) return;
+  el.classList.add('pressed');
+  const off = () => { el.classList.remove('pressed'); removeEventListener('pointerup', off); removeEventListener('pointercancel', off); };
+  addEventListener('pointerup', off); addEventListener('pointercancel', off);
+}, { passive: true });
+// se cambia la ruta: cerramos hojas abiertas
+addEventListener('hashchange', () => { while (anySheetOpen()) closeSheet(); ui.q = ''; ui.chatFiles = []; if (route().name !== 'pet') { ui.petTab = 'cartilla'; ui.recFilter = 'all'; } });
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && route().name === 'chat') schedule(); });
 
-    return `
-    <div class="layout">
-      <aside class="sidebar">
-        <a href="#/" class="brand"><span class="logo-text">Visvet</span><span class="brand-ico">${I.paw}</span></a>
-        <nav>
-          ${item('#/', I.home, 'Inicio', 'feed')}
-          ${item('#/explore', I.search, 'Explorar', 'explore')}
-          ${item('#/notifications', I.heart, 'Notificaciones', 'notifications', dot(notif))}
-          ${item('#/messages', I.message, 'Mensajes', 'messages', dot(msgs))}
-          ${item('#/appointments', I.calendar, me.role === 'vet' ? 'Agenda' : 'Mis citas', 'appointments', dot(pendingAppts))}
-          ${item('#/create', I.plus, 'Crear', 'create')}
-          <a href="#/u/${esc(me.username)}" class="nav-item${active === 'u' && parseHash().parts[1] === me.username ? ' active' : ''}">
-            <span class="nav-ico">${avatar(me, 26)}</span><span class="nav-label">Perfil</span></a>
-        </nav>
-        <div class="sidebar-foot">
-          <a href="#/edit" class="nav-item${active === 'edit' ? ' active' : ''}"><span class="nav-ico">${I.settings}</span><span class="nav-label">Configuración</span></a>
-          ${MANAGED ? '' : `<button class="nav-item" data-action="logout"><span class="nav-ico">${I.logout}</span><span class="nav-label">Cerrar sesión</span></button>`}
-        </div>
-      </aside>
-
-      <header class="topbar">
-        <a href="#/" class="logo-text">Visvet</a>
-        <div class="topbar-actions">
-          <a href="#/notifications" class="icon-btn" aria-label="Notificaciones">${I.heart}${dot(notif)}</a>
-          <a href="#/messages" class="icon-btn" aria-label="Mensajes">${I.message}${dot(msgs)}</a>
-        </div>
-      </header>
-
-      <main class="main">${content}</main>
-
-      <nav class="bottomnav">
-        <a href="#/" class="${active === 'feed' ? 'active' : ''}" aria-label="Inicio">${I.home}</a>
-        <a href="#/explore" class="${active === 'explore' ? 'active' : ''}" aria-label="Explorar">${I.search}</a>
-        <a href="#/create" class="${active === 'create' ? 'active' : ''}" aria-label="Crear">${I.plus}</a>
-        <a href="#/appointments" class="${active === 'appointments' ? 'active' : ''}" aria-label="Citas">${I.calendar}${dot(pendingAppts)}</a>
-        <a href="#/u/${esc(me.username)}" class="${active === 'u' ? 'active' : ''}" aria-label="Perfil">${avatar(me, 26)}</a>
-      </nav>
-    </div>`;
-  }
-
-  /* ======================================================
-   * Login / Registro
-   * ====================================================== */
-  function authAside() {
-    return `
-      <aside class="auth-aside">
-        <div class="auth-aside-in">
-          <span class="logo-text light">Visvet</span>
-          <h2 class="auth-claim">La consulta,<br><em>abierta.</em></h2>
-          <p class="auth-lead">Donde los veterinarios comparten lo que saben y las familias cuidan mejor a sus animales.</p>
-          <ul class="auth-points">
-            <li><span class="mono">01</span><span><b>Consejos y casos clínicos</b> firmados por profesionales colegiados.</span></li>
-            <li><span class="mono">02</span><span><b>Agenda de citas</b>: el cliente solicita, el veterinario confirma.</span></li>
-            <li><span class="mono">03</span><span><b>Mensajes directos</b> entre la clínica y cada familia.</span></li>
-          </ul>
-          <p class="auth-foot mono">VISVET · RED VETERINARIA · v2.0</p>
-        </div>
-      </aside>`;
-  }
-
-  function LoginPage() {
-    return `
-    <div class="auth">
-      ${authAside()}
-      <div class="auth-col">
-        <div class="card auth-card">
-          <h1 class="logo-text big">Visvet</h1>
-          <p class="muted center">La red social de los veterinarios y de quienes aman a sus mascotas.</p>
-          <form id="login-form" class="stack">
-            <input name="login" ${FB ? 'type="email" placeholder="Correo electrónico"' : 'placeholder="Usuario o correo electrónico"'} autocomplete="username" required>
-            <input name="password" type="password" placeholder="Contraseña" autocomplete="current-password" required>
-            <button class="btn primary block">Iniciar sesión</button>
-            <p class="form-error" id="auth-error"></p>
-          </form>
-          ${FB ? `<p class="center"><button type="button" class="link-btn" data-action="forgot">¿Has olvidado tu contraseña?</button></p>` : `
-          <div class="divider"><span>o prueba una cuenta demo</span></div>
-          <div class="demo-accounts">
-            <button class="chip" data-demo="dra.lucia">${I.stethoscope} Veterinaria</button>
-            <button class="chip" data-demo="ana.y.toby">${I.paw} Cliente</button>
-          </div>
-          <p class="tiny muted center">Contraseña de las cuentas demo: <b>demo1234</b></p>
-          <p class="tiny muted center">Modo demo: los datos se guardan solo en este navegador.</p>`}
-        </div>
-        <div class="card auth-card small-pad center">¿No tienes cuenta? <a href="#/register" class="strong-link">Regístrate</a></div>
-      </div>
-    </div>`;
-  }
-
-  let registerRole = 'client';
-  function RegisterPage() {
-    const vet = registerRole === 'vet';
-    return `
-    <div class="auth">
-      ${authAside()}
-      <div class="auth-col">
-        <div class="card auth-card">
-          <h1 class="logo-text big">Visvet</h1>
-          <p class="muted center">${MANAGED ? 'Crea tu perfil para empezar a compartir y cuidar mejor a tus pacientes o mascotas.' : 'Regístrate para compartir y cuidar mejor a tus pacientes o mascotas.'}</p>
-          <div class="role-switch" role="radiogroup">
-            <button type="button" class="role-opt${vet ? ' active' : ''}" data-role="vet" role="radio" aria-checked="${vet}">
-              <span class="role-ico">${I.stethoscope}</span><b>Soy veterinario/a</b><small>Perfil profesional verificado, agenda de citas</small></button>
-            <button type="button" class="role-opt${!vet ? ' active' : ''}" data-role="client" role="radio" aria-checked="${!vet}">
-              <span class="role-ico">${I.paw}</span><b>Soy cliente</b><small>Dueño/a de mascotas, pide citas y sigue a tu veterinario</small></button>
-          </div>
-          <form id="register-form" class="stack">
-            <input name="name" placeholder="Nombre completo" required maxlength="60">
-            <input name="username" placeholder="Nombre de usuario" required maxlength="30" autocomplete="username" pattern="[A-Za-z0-9._]{3,30}" title="3-30 caracteres: letras, números, punto o guion bajo">
-            ${MANAGED ? '' : `<input name="email" type="email" placeholder="Correo electrónico" required autocomplete="email">
-            <input name="password" type="password" placeholder="Contraseña (mín. 6 caracteres)" minlength="6" required autocomplete="new-password">`}
-            <input name="city" placeholder="Ciudad" maxlength="40">
-            ${vet ? `
-              <div class="form-section">${I.stethoscope} Datos profesionales</div>
-              <input name="clinic" placeholder="Clínica u hospital veterinario" required maxlength="80">
-              <input name="license" placeholder="Nº de colegiado" required maxlength="30">
-              <select name="specialty" required>
-                <option value="">Especialidad…</option>
-                ${SPECIALTIES.map((s) => `<option>${s}</option>`).join('')}
-              </select>
-              <label class="check"><input type="checkbox" required> Declaro que soy veterinario/a colegiado/a</label>
-            ` : `
-              <div class="form-section">${I.paw} Tu primera mascota <small class="muted">(opcional)</small></div>
-              <div class="grid-2">
-                <input name="petName" placeholder="Nombre" maxlength="30">
-                <select name="petSpecies">${SPECIES.map((s) => `<option>${s}</option>`).join('')}</select>
-              </div>
-            `}
-            <button class="btn primary block">${MANAGED ? 'Crear mi perfil' : 'Registrarte'}</button>
-            <p class="form-error" id="auth-error"></p>
-          </form>
-        </div>
-        ${MANAGED ? '<div class="card auth-card small-pad center muted">Entras con tu cuenta de Claude: no necesitas contraseña.</div>' : '<div class="card auth-card small-pad center">¿Tienes una cuenta? <a href="#/login" class="strong-link">Inicia sesión</a></div>'}
-      </div>
-    </div>`;
-  }
-
-  function afterLogin() {
-    const n = parseHash().name;
-    if (n === 'login' || n === 'register' || !getHash()) setHash('#/');
-    render();
-  }
-
-  function mountAuth() {
-    const err = (m) => { const e = $('#auth-error'); if (e) e.textContent = m; };
-    const login = $('#login-form');
-    if (login) {
-      login.onsubmit = async (e) => {
-        e.preventDefault();
-        const f = e.target;
-        try { await S.login(f.login.value, f.password.value); afterLogin(); }
-        catch (ex) { err(ex.message); }
-      };
-      $$('[data-demo]').forEach((b) => (b.onclick = async () => {
-        try { await S.login(b.dataset.demo, 'demo1234'); afterLogin(); toast(`¡Hola, ${S.currentUser().name}! 👋`); }
-        catch (ex) { err(ex.message); }
-      }));
-    }
-    const reg = $('#register-form');
-    if (reg) {
-      $$('[data-role]').forEach((b) => (b.onclick = () => {
-        // conservar lo escrito al cambiar de rol
-        const keep = {};
-        ['name', 'username', 'email', 'password', 'city'].forEach((k) => { if (reg[k]) keep[k] = reg[k].value; });
-        registerRole = b.dataset.role;
-        render();
-        const r2 = $('#register-form');
-        Object.entries(keep).forEach(([k, v]) => (r2[k].value = v));
-      }));
-      reg.onsubmit = async (e) => {
-        e.preventDefault();
-        const f = e.target;
-        const data = {
-          role: registerRole, name: f.name.value, username: f.username.value,
-          email: f.email ? f.email.value : '', password: f.password ? f.password.value : '', city: f.city.value,
-        };
-        if (registerRole === 'vet') {
-          Object.assign(data, { clinic: f.clinic.value.trim(), license: f.license.value.trim(), specialty: f.specialty.value });
-        } else if (f.petName.value.trim()) {
-          data.pets = [{ name: f.petName.value.trim(), species: f.petSpecies.value, breed: '', age: '' }];
-        }
-        try {
-          const u = await S.register(data);
-          S.setSession(u.id);
-          // seguir automáticamente a algunos veterinarios para que el inicio no esté vacío
-          const vets = S.data.users.filter((x) => x.role === 'vet' && x.id !== u.id).slice(0, 3).map((v) => v.id);
-          if (vets.length) S.updateUser(u.id, { following: vets });
-          setHash('#/');
-          render();
-          toast(`¡Bienvenido/a a Visvet, ${u.name}! 🐾`);
-        } catch (ex) { err(ex.message); }
-      };
-    }
-  }
-
-  /* ======================================================
-   * Tarjeta de publicación
-   * ====================================================== */
-  function postCard(p, variant = 'feed') {
-    const author = S.user(p.userId);
-    if (!author) return '';
-    const liked = p.likes.includes(me.id);
-    const saved = p.savedBy.includes(me.id);
-    const cat = CATEGORIES[p.category];
-    const comments = variant === 'full' ? p.comments : p.comments.slice(-2);
-    const hasStory = S.activeStories().some((s) => s.userId === author.id);
-
-    return `
-    <article class="post card" data-post="${p.id}" data-variant="${variant}">
-      <header class="post-head">
-        <a href="#/u/${esc(author.username)}" ${hasStory ? `data-action="open-story" data-user="${author.id}"` : ''}>${avatar(author, 34, { ring: hasStory })}</a>
-        <div class="post-meta">
-          <div>${userLink(author)} <span class="muted dot-sep">• ${timeAgo(p.createdAt)}</span></div>
-          <small class="muted">${author.role === 'vet' ? esc(author.clinic || roleLabel(author)) : esc(author.city || '')}</small>
-        </div>
-        ${cat ? `<span class="cat-chip cat-${p.category}"><i class="dot"></i>${cat.label}</span>` : ''}
-        <button class="icon-btn" data-action="post-options" data-id="${p.id}" aria-label="Opciones">${I.more}</button>
-      </header>
-      <div class="post-media" data-action="dbl-like" data-id="${p.id}">
-        <img ${imgSrc(p.image)} alt="Publicación de ${esc(author.username)}" loading="lazy">
-        <span class="big-heart">${I.heartFill}</span>
-      </div>
-      <div class="post-body">
-        <div class="post-actions">
-          <button class="icon-btn${liked ? ' liked' : ''}" data-action="like" data-id="${p.id}" aria-label="Me gusta">${liked ? I.heartFill : I.heart}</button>
-          <a class="icon-btn" href="#/p/${p.id}" aria-label="Comentar">${I.comment}</a>
-          <button class="icon-btn" data-action="share" data-id="${p.id}" aria-label="Compartir">${I.send}</button>
-          <span class="spacer"></span>
-          <button class="icon-btn${saved ? ' saved' : ''}" data-action="save" data-id="${p.id}" aria-label="Guardar">${saved ? I.bookmarkFill : I.bookmark}</button>
-        </div>
-        <button class="likes-line" data-action="show-likes" data-id="${p.id}">${plural(p.likes.length, 'Me gusta', 'Me gusta')}</button>
-        ${p.caption ? `<p class="caption">${userLink(author)} ${richText(p.caption)}</p>` : ''}
-        ${variant !== 'full' && p.comments.length > 2 ? `<a href="#/p/${p.id}" class="muted view-all">Ver los ${p.comments.length} comentarios</a>` : ''}
-        <ul class="comments">
-          ${comments.map((c) => commentItem(p, c)).join('')}
-        </ul>
-        ${variant === 'full' ? `<p class="tiny muted upper">${new Date(p.createdAt).toLocaleString('es-ES', { dateStyle: 'long', timeStyle: 'short' })}</p>` : ''}
-        <form class="comment-form" data-form="comment" data-id="${p.id}">
-          <input name="text" placeholder="Añade un comentario…" maxlength="500" autocomplete="off">
-          <button class="link-btn">Publicar</button>
-        </form>
-      </div>
-    </article>`;
-  }
-
-  function commentItem(p, c) {
-    const u = S.user(c.userId);
-    if (!u) return '';
-    const canDelete = c.userId === me.id || p.userId === me.id;
-    return `<li class="comment">
-      <span>${userLink(u)} ${richText(c.text)}</span>
-      ${canDelete ? `<button class="icon-btn tiny-ico" data-action="del-comment" data-post="${p.id}" data-id="${c.id}" aria-label="Eliminar comentario">${I.close}</button>` : ''}
-    </li>`;
-  }
-
-  function refreshPost(id) {
-    const p = S.post(id);
-    $$(`[data-post="${id}"].post`).forEach((el) => {
-      const draft = el.querySelector('.comment-form input')?.value || '';
-      if (!p) { el.remove(); return; }
-      const tmp = document.createElement('div');
-      tmp.innerHTML = postCard(p, el.dataset.variant);
-      const fresh = tmp.firstElementChild;
-      el.replaceWith(fresh);
-      hydrate(fresh);
-      if (draft) fresh.querySelector('.comment-form input').value = draft;
-    });
-  }
-
-  /* ======================================================
-   * Inicio (feed)
-   * ====================================================== */
-  function storiesBar() {
-    const stories = S.activeStories();
-    const visible = new Set([me.id, ...me.following]);
-    const byUser = new Map();
-    stories.filter((s) => visible.has(s.userId)).sort((a, b) => a.createdAt - b.createdAt).forEach((s) => {
-      if (!byUser.has(s.userId)) byUser.set(s.userId, []);
-      byUser.get(s.userId).push(s);
-    });
-    const mine = byUser.get(me.id);
-    const others = [...byUser.entries()].filter(([id]) => id !== me.id)
-      .map(([id, list]) => ({ user: S.user(id), list, seen: list.every((s) => s.seenBy.includes(me.id)) }))
-      .filter((x) => x.user)
-      .sort((a, b) => a.seen - b.seen);
-
-    return `
-    <div class="stories card">
-      <div class="story">
-        <button class="story-btn" data-action="${mine ? 'open-story' : 'add-story'}" data-user="${me.id}">
-          ${avatar(me, 62, { ring: !!mine, seen: mine && mine.every((s) => s.seenBy.includes(me.id)) })}
-          <span class="story-plus" data-action="add-story">+</span>
-        </button>
-        <span class="story-name">Tu historia</span>
-      </div>
-      ${others.map(({ user, seen }) => `
-        <div class="story">
-          <button class="story-btn" data-action="open-story" data-user="${user.id}">${avatar(user, 62, { ring: true, seen })}</button>
-          <span class="story-name">${esc(user.username)}</span>
-        </div>`).join('')}
-    </div>
-    <input type="file" accept="image/*" id="story-input" hidden>`;
-  }
-
-  function FeedPage() {
-    const ids = new Set([me.id, ...me.following]);
-    let posts = S.data.posts.filter((p) => ids.has(p.userId)).sort((a, b) => b.createdAt - a.createdAt);
-    const discovering = posts.length === 0;
-    if (discovering) posts = [...S.data.posts].sort((a, b) => b.createdAt - a.createdAt);
-
-    const suggestions = S.data.users
-      .filter((u) => u.id !== me.id && !me.following.includes(u.id))
-      .sort((a, b) => (b.role === 'vet') - (a.role === 'vet') || S.followers(b.id).length - S.followers(a.id).length)
-      .slice(0, 5);
-
-    const upcoming = S.appointmentsFor(me.id).filter((a) => a.date >= today() && (a.status === 'confirmada' || a.status === 'pendiente')).slice(0, 2);
-
-    return {
-      html: `
-      <div class="feed-layout">
-        <section class="feed-col">
-          ${storiesBar()}
-          ${discovering ? `<div class="card info-card">${I.paw}<div><b>Tu inicio está vacío</b><p class="muted">Sigue a veterinarios y amigos para ver sus publicaciones aquí. Mientras tanto, te mostramos lo último en Visvet.</p></div></div>` : ''}
-          ${posts.map((p) => postCard(p)).join('') || '<p class="empty">Todavía no hay publicaciones.</p>'}
-          ${posts.length ? `<div class="end-feed">${I.check}<b>Ya estás al día</b><span class="muted">Has visto todas las publicaciones recientes.</span></div>` : ''}
-        </section>
-        <aside class="side-col">
-          <div class="me-row">
-            <a href="#/u/${esc(me.username)}">${avatar(me, 44)}</a>
-            <div class="grow"><div>${userLink(me)}</div><small class="muted">${esc(me.name)}</small></div>
-            ${MANAGED ? '' : '<button class="link-btn" data-action="logout">Salir</button>'}
-          </div>
-          ${upcoming.length ? `
-            <div class="side-box">
-              <div class="side-title"><span>Próximas citas</span><a href="#/appointments">Ver todas</a></div>
-              ${upcoming.map((a) => {
-                const other = S.user(me.id === a.vetId ? a.clientId : a.vetId);
-                return `<a href="#/appointments" class="mini-appt">
-                  <span class="mini-date"><b>${a.date.slice(8)}</b><small>${new Date(a.date + 'T12:00').toLocaleDateString('es-ES', { month: 'short' })}</small></span>
-                  <span class="grow"><b>${esc(a.petName)}</b> · ${esc(a.time)}<br><small class="muted">${other ? esc(other.name) : ''}</small></span>
-                  <span class="status ${STATUS[a.status].cls}">${STATUS[a.status].label}</span></a>`;
-              }).join('')}
-            </div>` : ''}
-          ${suggestions.length ? `
-            <div class="side-box">
-              <div class="side-title"><span>Sugerencias para ti</span><a href="#/explore?tab=vets">Ver todo</a></div>
-              ${suggestions.map((u) => `
-                <div class="sugg">
-                  <a href="#/u/${esc(u.username)}">${avatar(u, 36)}</a>
-                  <div class="grow"><div>${userLink(u)}</div><small class="muted">${u.role === 'vet' ? esc(u.specialty || 'Veterinario/a') : 'Dueño/a de mascotas'}${u.city ? ' · ' + esc(u.city) : ''}</small></div>
-                  <button class="link-btn" data-action="follow" data-id="${u.id}">Seguir</button>
-                </div>`).join('')}
-            </div>` : ''}
-          <footer class="side-foot">Visvet · La red social veterinaria<br>© ${new Date().getFullYear()} Visvet</footer>
-        </aside>
-      </div>`,
-      mount: mountStoryInput,
-    };
-  }
-
-  /* ---------- Historias ---------- */
-  function mountStoryInput() {
-    const input = $('#story-input');
-    if (!input) return;
-    input.onchange = async () => {
-      const file = input.files[0];
-      input.value = '';
-      if (!file) return;
-      try {
-        const img = await readImage(file, 900, 0.8);
-        if (S.addStory(me.id, img)) { toast('Historia publicada (visible 24 h) ✨'); render(); }
-      } catch (e) { toast(e.message, 'error'); }
-    };
-  }
-
-  const story = { queue: [], ui: 0, si: 0, timer: null, start: 0, dur: 5000 };
-  function openStories(userId) {
-    const visible = new Set([me.id, ...me.following, userId]);
-    const all = S.activeStories().filter((s) => visible.has(s.userId)).sort((a, b) => a.createdAt - b.createdAt);
-    const order = [];
-    all.forEach((s) => { if (!order.includes(s.userId)) order.push(s.userId); });
-    // empezar por el usuario pulsado
-    const start = order.indexOf(userId);
-    const users = start >= 0 ? order.slice(start).concat(order.slice(0, start)).slice(0, order.length) : [userId];
-    story.queue = users.map((id) => ({ user: S.user(id), list: all.filter((s) => s.userId === id) })).filter((q) => q.user && q.list.length);
-    if (!story.queue.length) return;
-    story.ui = 0;
-    story.si = Math.max(0, story.queue[0].list.findIndex((s) => !s.seenBy.includes(me.id)));
-    openModal('<div class="story-viewer" id="story-viewer"></div>', { cls: 'story-modal', onClose: () => { clearTimeout(story.timer); render(); } });
-    showStory();
-  }
-  function showStory() {
-    clearTimeout(story.timer);
-    const group = story.queue[story.ui];
-    if (!group) return closeModal();
-    const s = group.list[story.si];
-    if (!s) return closeModal();
-    S.markStorySeen(s.id, me.id);
-    const el = $('#story-viewer');
-    if (!el) return;
-    const own = s.userId === me.id;
-    el.innerHTML = `
-      <div class="story-bars">${group.list.map((x, i) => `<span class="bar"><i class="${i < story.si ? 'full' : i === story.si ? 'run' : ''}"></i></span>`).join('')}</div>
-      <div class="story-top">
-        <a href="#/u/${esc(group.user.username)}" data-action="close-modal">${avatar(group.user, 32)}</a>
-        <b>${esc(group.user.username)}</b>${badge(group.user)}<span class="muted-light">${timeAgo(s.createdAt)}</span>
-        <span class="spacer"></span>
-        ${own ? `<span class="muted-light seen-count">👁 ${s.seenBy.filter((x) => x !== me.id).length}</span><button class="icon-btn light" data-action="del-story" data-id="${s.id}" aria-label="Eliminar historia">${I.trash}</button>` : ''}
-        <button class="icon-btn light" data-action="close-modal" aria-label="Cerrar">${I.close}</button>
-      </div>
-      <img ${imgSrc(s.image)} alt="Historia de ${esc(group.user.username)}">
-      <button class="story-nav prev" data-action="story-prev" aria-label="Anterior"></button>
-      <button class="story-nav next" data-action="story-next" aria-label="Siguiente"></button>
-      ${!own ? `<form class="story-reply" data-form="story-reply" data-to="${group.user.id}"><input name="text" placeholder="Responder a ${esc(group.user.username)}…" autocomplete="off"><button class="icon-btn light">${I.send}</button></form>` : ''}`;
-    hydrate(el);
-    const bar = el.querySelector('.bar i.run');
-    if (bar) { bar.style.animationDuration = story.dur + 'ms'; }
-    story.timer = setTimeout(nextStory, story.dur);
-    const input = el.querySelector('.story-reply input');
-    if (input) {
-      input.addEventListener('focus', () => { clearTimeout(story.timer); if (bar) bar.style.animationPlayState = 'paused'; });
-    }
-  }
-  function nextStory() {
-    const g = story.queue[story.ui];
-    if (story.si < g.list.length - 1) story.si++;
-    else { story.ui++; story.si = 0; }
-    showStory();
-  }
-  function prevStory() {
-    if (story.si > 0) story.si--;
-    else if (story.ui > 0) { story.ui--; story.si = story.queue[story.ui].list.length - 1; }
-    showStory();
-  }
-
-  /* ======================================================
-   * Detalle de publicación
-   * ====================================================== */
-  function PostPage(id) {
-    const p = S.post(id);
-    if (!p) return NotFound('Esta publicación ya no está disponible.');
-    const author = S.user(p.userId);
-    const more = S.postsBy(p.userId).filter((x) => x.id !== p.id).slice(0, 6);
-    return {
-      html: `
-      <div class="page narrow">
-        <button class="back-btn" data-action="back">${I.back} Volver</button>
-        ${postCard(p, 'full')}
-        ${more.length ? `<h4 class="section-title">Más publicaciones de ${userLink(author)}</h4>
-          <div class="grid">${more.map(gridItem).join('')}</div>` : ''}
-      </div>`,
-      mount: () => { const i = $('.comment-form input'); if (i && window.matchMedia('(min-width: 768px)').matches) i.focus(); },
-    };
-  }
-
-  function gridItem(p) {
-    return `<a href="#/p/${p.id}" class="grid-item">
-      <img ${imgSrc(p.image)} alt="" loading="lazy">
-      <span class="grid-overlay"><span>${I.heartFill} ${p.likes.length}</span><span>${I.comment} ${p.comments.length}</span></span>
-      ${['adopcion', 'caso', 'aviso'].includes(p.category) ? `<span class="grid-tag cat-${p.category}">${CATEGORIES[p.category].label.split(' ')[0]}</span>` : ''}
-    </a>`;
-  }
-
-  /* ======================================================
-   * Explorar
-   * ====================================================== */
-  function ExplorePage(params) {
-    const q = (params.q || '').trim();
-    const tab = params.tab || 'posts';
-    const cat = params.cat || 'all';
-    const spec = params.spec || '';
-    const ql = q.toLowerCase();
-
-    const tabLink = (t, label) => `<a href="#/explore?${new URLSearchParams({ ...params, tab: t })}" class="tab${tab === t ? ' active' : ''}">${label}</a>`;
-
-    let body = '';
-    if (tab === 'posts') {
-      let posts = [...S.data.posts].sort((a, b) => (b.likes.length + b.comments.length * 2) - (a.likes.length + a.comments.length * 2) || b.createdAt - a.createdAt);
-      if (cat !== 'all') posts = posts.filter((p) => p.category === cat);
-      if (ql) posts = posts.filter((p) => {
-        const a = S.user(p.userId);
-        return p.caption.toLowerCase().includes(ql) || (a && a.username.includes(ql));
-      });
-      body = `
-        <div class="chips-row">
-          <a href="#/explore?${new URLSearchParams({ ...params, cat: 'all' })}" class="chip${cat === 'all' ? ' active' : ''}">Todo</a>
-          ${Object.entries(CATEGORIES).map(([k, c]) => `<a href="#/explore?${new URLSearchParams({ ...params, cat: k })}" class="chip${cat === k ? ' active' : ''}"><i class="dot cat-${k}"></i>${c.label}</a>`).join('')}
-        </div>
-        ${posts.length ? `<div class="grid">${posts.map(gridItem).join('')}</div>` : `<p class="empty">No hay publicaciones${q ? ` para «${esc(q)}»` : ''}.</p>`}`;
-    } else {
-      const vets = tab === 'vets';
-      let users = S.data.users.filter((u) => u.id !== me.id && (vets ? u.role === 'vet' : u.role === 'client'));
-      if (ql) users = users.filter((u) => [u.username, u.name, u.clinic, u.specialty, u.city, ...(u.pets || []).map((p) => p.name + ' ' + p.species)].join(' ').toLowerCase().includes(ql.replace(/^#/, '')));
-      if (vets && spec) users = users.filter((u) => u.specialty === spec);
-      body = `
-        ${vets ? `<div class="filter-row"><select id="spec-filter"><option value="">Todas las especialidades</option>${SPECIALTIES.map((s) => `<option${s === spec ? ' selected' : ''}>${s}</option>`).join('')}</select></div>` : ''}
-        <div class="user-list">
-          ${users.map((u) => userRow(u, true)).join('') || `<p class="empty">No se encontraron ${vets ? 'veterinarios' : 'personas'}.</p>`}
-        </div>`;
-    }
-
-    return {
-      html: `
-      <div class="page">
-        <form class="search-bar" id="search-form">
-          ${I.search}<input name="q" value="${esc(q)}" placeholder="${tab === 'vets' ? 'Busca por nombre, clínica, especialidad o ciudad…' : 'Buscar publicaciones, #hashtags o usuarios…'}" autocomplete="off">
-          ${q ? `<a href="#/explore?${new URLSearchParams({ tab })}" class="icon-btn" aria-label="Borrar">${I.close}</a>` : ''}
-        </form>
-        <div class="tabs">${tabLink('posts', `${I.grid} Publicaciones`)}${tabLink('vets', `${I.stethoscope} Veterinarios`)}${tabLink('people', `${I.paw} Dueños de mascotas`)}</div>
-        ${body}
-      </div>`,
-      mount: () => {
-        $('#search-form').onsubmit = (e) => {
-          e.preventDefault();
-          const v = e.target.q.value.trim();
-          const np = { ...params };
-          if (v) np.q = v; else delete np.q;
-          // si busca un nombre de usuario exacto, sugerimos pestañas de personas
-          setHash('#/explore?' + new URLSearchParams(np));
-        };
-        const sf = $('#spec-filter');
-        if (sf) sf.onchange = () => {
-          const np = { ...params, spec: sf.value };
-          if (!sf.value) delete np.spec;
-          setHash('#/explore?' + new URLSearchParams(np));
-        };
-      },
-    };
-  }
-
-  function userRow(u, showFollow) {
-    const following = me.following.includes(u.id);
-    return `
-    <div class="user-row">
-      <a href="#/u/${esc(u.username)}">${avatar(u, 48)}</a>
-      <div class="grow">
-        <div>${userLink(u)}</div>
-        <small class="muted">${esc(u.name)}${u.role === 'vet' ? ` · ${esc(u.specialty || '')}` : ''}</small>
-        ${u.role === 'vet' && (u.clinic || u.city) ? `<small class="muted block">${I.location} ${esc([u.clinic, u.city].filter(Boolean).join(', '))}</small>` : ''}
-        ${u.role === 'client' && u.pets && u.pets.length ? `<small class="muted block">${u.pets.map((p) => esc(p.name) + ' <span class="mono-s">' + esc(p.species) + '</span>').join(' · ')}</small>` : ''}
-      </div>
-      ${showFollow && u.id !== me.id ? `<button class="btn ${following ? 'ghost' : 'primary'} sm" data-action="follow" data-id="${u.id}">${following ? 'Siguiendo' : 'Seguir'}</button>` : ''}
-    </div>`;
-  }
-
-  /* ======================================================
-   * Crear publicación / historia
-   * ====================================================== */
-  const draft = { image: null, mode: 'post', category: null };
-  function CreatePage() {
-    const vet = me.role === 'vet';
-    if (!draft.category) draft.category = vet ? 'consejo' : 'mascota';
-    return {
-      html: `
-      <div class="page narrow">
-        <div class="card create-card">
-          <div class="create-head">
-            <h2>Crear</h2>
-            <div class="seg">
-              <button class="${draft.mode === 'post' ? 'active' : ''}" data-action="create-mode" data-mode="post">Publicación</button>
-              <button class="${draft.mode === 'story' ? 'active' : ''}" data-action="create-mode" data-mode="story">Historia</button>
-            </div>
-          </div>
-          <form id="create-form">
-            <label class="dropzone${draft.image ? ' has-img' : ''}" id="dropzone">
-              ${draft.image ? `<img src="${draft.image}" alt="Vista previa">` : `${I.image}<b>Arrastra una foto aquí</b><span class="muted">o haz clic para seleccionarla</span>`}
-              <input type="file" accept="image/*" id="create-file" hidden>
-            </label>
-            ${draft.image ? '<button type="button" class="link-btn" data-action="clear-image">Cambiar imagen</button>' : ''}
-            ${draft.mode === 'post' ? `
-              <div class="field"><span>Categoría</span>
-                <div class="chips-row wrap">
-                  ${Object.entries(CATEGORIES).map(([k, c]) => {
-                    const disabled = c.vetOnly && !vet;
-                    return `<button type="button" class="chip${draft.category === k ? ' active' : ''}" data-action="pick-cat" data-cat="${k}" ${disabled ? 'disabled title="Solo para veterinarios"' : ''}><i class="dot cat-${k}"></i>${c.label}</button>`;
-                  }).join('')}
-                </div>
-                ${!vet ? '<small class="muted">«Consejo veterinario» y «Caso clínico» están reservados a profesionales verificados.</small>' : ''}
-              </div>
-              <label class="field"><span>Descripción</span>
-                <textarea name="caption" rows="5" maxlength="2200" placeholder="${vet ? 'Comparte un consejo, un caso clínico o una novedad de tu clínica… Usa #hashtags y @menciones' : 'Cuéntanos algo sobre tu mascota… Usa #hashtags y menciona a tu veterinario con @'}">${esc(draft.caption || '')}</textarea>
-                <small class="muted right" id="cap-count">${(draft.caption || '').length}/2200</small>
-              </label>` : '<p class="muted">Las historias se muestran durante 24 horas a tus seguidores.</p>'}
-            <button class="btn primary block" ${draft.image ? '' : 'disabled'}>${draft.mode === 'post' ? 'Compartir publicación' : 'Publicar historia'}</button>
-          </form>
-        </div>
-      </div>`,
-      mount: () => {
-        const file = $('#create-file');
-        const dz = $('#dropzone');
-        const load = async (f) => {
-          try { draft.image = await readImage(f, draft.mode === 'story' ? 900 : 1080, 0.82); render(); }
-          catch (e) { toast(e.message, 'error'); }
-        };
-        file.onchange = () => file.files[0] && load(file.files[0]);
-        dz.ondragover = (e) => { e.preventDefault(); dz.classList.add('drag'); };
-        dz.ondragleave = () => dz.classList.remove('drag');
-        dz.ondrop = (e) => { e.preventDefault(); dz.classList.remove('drag'); e.dataTransfer.files[0] && load(e.dataTransfer.files[0]); };
-        const cap = $('#create-form [name=caption]');
-        if (cap) cap.oninput = () => { draft.caption = cap.value; $('#cap-count').textContent = `${cap.value.length}/2200`; };
-        $('#create-form').onsubmit = (e) => {
-          e.preventDefault();
-          if (!draft.image) return toast('Añade una imagen primero.', 'error');
-          if (draft.mode === 'story') {
-            if (S.addStory(me.id, draft.image)) { Object.assign(draft, { image: null, caption: '' }); toast('Historia publicada ✨'); go('#/'); }
-            return;
-          }
-          const post = S.createPost({ userId: me.id, image: draft.image, caption: (draft.caption || '').trim(), category: draft.category });
-          if (post) {
-            Object.assign(draft, { image: null, caption: '', category: null });
-            toast('¡Publicación compartida! 🎉');
-            go('#/p/' + post.id);
-          }
-        };
-      },
-    };
-  }
-
-  /* ======================================================
-   * Perfil
-   * ====================================================== */
-  let profileTab = 'posts';
-  let lastProfile = '';
-  function ProfilePage(username) {
-    const u = S.userByUsername(username);
-    if (!u) return NotFound('Este perfil no existe.');
-    if (lastProfile !== u.id) { profileTab = 'posts'; lastProfile = u.id; }
-    const own = u.id === me.id;
-    const posts = S.postsBy(u.id);
-    const followers = S.followers(u.id);
-    const following = me.following.includes(u.id);
-    const followsMe = u.following.includes(me.id);
-    const hasStory = S.activeStories().some((s) => s.userId === u.id);
-    const seen = hasStory && S.activeStories().filter((s) => s.userId === u.id).every((s) => s.seenBy.includes(me.id));
-
-    const tabs = [['posts', I.grid, 'Publicaciones']];
-    if (u.role === 'client') tabs.push(['pets', I.paw, 'Mascotas']);
-    if (u.role === 'vet') tabs.push(['info', I.stethoscope, 'Clínica']);
-    if (own) tabs.push(['saved', I.bookmark, 'Guardado']);
-    if (!tabs.some((t) => t[0] === profileTab)) profileTab = 'posts';
-
-    let tabBody = '';
-    if (profileTab === 'posts') {
-      tabBody = posts.length ? `<div class="grid">${posts.map(gridItem).join('')}</div>`
-        : `<div class="empty big">${I.image}<h3>${own ? 'Comparte tu primera foto' : 'Aún no hay publicaciones'}</h3>${own ? '<a href="#/create" class="btn primary">Crear publicación</a>' : ''}</div>`;
-    } else if (profileTab === 'saved') {
-      const saved = S.data.posts.filter((p) => p.savedBy.includes(me.id)).sort((a, b) => b.createdAt - a.createdAt);
-      tabBody = saved.length ? `<p class="tiny muted">Solo tú puedes ver lo que has guardado.</p><div class="grid">${saved.map(gridItem).join('')}</div>`
-        : `<div class="empty big">${I.bookmark}<h3>Guarda consejos útiles</h3><p class="muted">Pulsa el marcador en cualquier publicación para tenerla a mano.</p></div>`;
-    } else if (profileTab === 'pets') {
-      tabBody = (u.pets || []).length ? `<div class="pets-grid">${u.pets.map((p) => `
-        <div class="pet-card card">
-          <span class="pet-emoji">${esc(p.name.charAt(0).toUpperCase())}</span>
-          <b>${esc(p.name)}</b>
-          <small class="muted">${esc([p.species, p.breed, p.age].filter(Boolean).join(' · '))}</small>
-        </div>`).join('')}</div>`
-        : `<div class="empty big">${I.paw}<h3>Sin mascotas registradas</h3>${own ? '<a href="#/edit" class="btn primary">Añadir mascota</a>' : ''}</div>`;
-    } else if (profileTab === 'info') {
-      tabBody = `<div class="card clinic-card">
-        <h3>${I.stethoscope} ${esc(u.clinic || 'Clínica veterinaria')}</h3>
-        <ul class="info-list">
-          ${u.specialty ? `<li>${I.paw}<span><b>Especialidad</b><br>${esc(u.specialty)}</span></li>` : ''}
-          ${u.city ? `<li>${I.location}<span><b>Ubicación</b><br>${esc(u.city)}</span></li>` : ''}
-          ${u.schedule ? `<li>${I.clock}<span><b>Horario</b><br>${esc(u.schedule)}</span></li>` : ''}
-          ${u.phone ? `<li>${I.phone}<span><b>Teléfono</b><br><a href="tel:${esc(u.phone.replace(/\s/g, ''))}">${esc(u.phone)}</a></span></li>` : ''}
-          ${u.license ? `<li>${I.check}<span><b>Nº de colegiado</b><br>${esc(u.license)}</span></li>` : ''}
-        </ul>
-        ${me.role === 'client' ? `<button class="btn primary" data-action="request-appt" data-vet="${u.id}">${I.calendar} Pedir cita</button>` : ''}
-      </div>`;
-    }
-
-    return `
-    <div class="page profile">
-      <header class="profile-head">
-        <button class="profile-avatar" ${hasStory ? `data-action="open-story" data-user="${u.id}"` : ''} ${own && !hasStory ? 'data-action="go" data-href="#/edit"' : ''}>${avatar(u, 150, { ring: hasStory, seen })}</button>
-        <div class="profile-info">
-          <div class="profile-row">
-            <h2>${esc(u.username)} ${badge(u)}</h2>
-            <div class="profile-btns">
-              ${own ? `<a href="#/edit" class="btn ghost sm">Editar perfil</a><a href="#/create" class="btn ghost sm">Nueva publicación</a>`
-                : `<button class="btn ${following ? 'ghost' : 'primary'} sm" data-action="follow" data-id="${u.id}">${following ? 'Siguiendo' : followsMe ? 'Seguir también' : 'Seguir'}</button>
-                   <a href="#/messages/${esc(u.username)}" class="btn ghost sm">Mensaje</a>
-                   ${u.role === 'vet' && me.role === 'client' ? `<button class="btn accent sm" data-action="request-appt" data-vet="${u.id}">${I.calendar} Pedir cita</button>` : ''}`}
-            </div>
-          </div>
-          <ul class="profile-stats">
-            <li><b>${posts.length}</b> publicaciones</li>
-            <li><button data-action="show-followers" data-id="${u.id}"><b>${followers.length}</b> seguidores</button></li>
-            <li><button data-action="show-following" data-id="${u.id}"><b>${u.following.length}</b> seguidos</button></li>
-          </ul>
-          <div class="profile-bio">
-            <b>${esc(u.name)}</b>
-            <span class="role-tag ${u.role}">${u.role === 'vet' ? I.stethoscope : I.paw} ${roleLabel(u)}</span>
-            ${u.role === 'vet' && u.clinic ? `<div class="muted">${esc(u.clinic)}${u.city ? ' · ' + esc(u.city) : ''}</div>` : u.city ? `<div class="muted">${I.location} ${esc(u.city)}</div>` : ''}
-            ${u.bio ? `<p>${richText(u.bio)}</p>` : ''}
-            ${u.role === 'client' && (u.pets || []).length ? `<div class="pet-chips">${u.pets.map((p) => `<span class="chip static">${esc(p.name)} <span class="mono-s">${esc(p.species)}</span></span>`).join('')}</div>` : ''}
-            ${followsMe && !own ? '<small class="muted">Te sigue</small>' : ''}
-          </div>
-        </div>
-      </header>
-      <div class="tabs center">${tabs.map(([k, ico, label]) => `<button class="tab${profileTab === k ? ' active' : ''}" data-action="profile-tab" data-tab="${k}">${ico} ${label}</button>`).join('')}</div>
-      ${tabBody}
-    </div>`;
-  }
-
-  /* ======================================================
-   * Editar perfil / configuración
-   * ====================================================== */
-  function EditProfilePage() {
-    const vet = me.role === 'vet';
-    return {
-      html: `
-      <div class="page narrow">
-        <h2 class="page-title">Configuración</h2>
-        <div class="card edit-card">
-          <div class="edit-avatar">
-            ${avatar(me, 64)}
-            <div><b>${esc(me.username)}</b><br>
-              <label class="link-btn">Cambiar foto de perfil<input type="file" accept="image/*" id="avatar-input" hidden></label>
-              ${me.avatar ? ' · <button class="link-btn danger" data-action="remove-avatar">Quitar</button>' : ''}
-            </div>
-          </div>
-          <form id="profile-form" class="stack">
-            <label class="field"><span>Nombre</span><input name="name" value="${esc(me.name)}" required maxlength="60"></label>
-            ${MANAGED ? '' : FB ? `<div class="field"><span>Correo electrónico</span><small class="muted">${esc(S.authEmail())} · privado, no lo ve nadie más</small></div>`
-              : `<label class="field"><span>Correo electrónico</span><input name="email" type="email" value="${esc(me.email)}" maxlength="80"></label>`}
-            <label class="field"><span>Biografía</span><textarea name="bio" rows="3" maxlength="300">${esc(me.bio)}</textarea></label>
-            <label class="field"><span>Ciudad</span><input name="city" value="${esc(me.city)}" maxlength="40"></label>
-            ${vet ? `
-              <div class="form-section">${I.stethoscope} Datos profesionales</div>
-              <label class="field"><span>Clínica u hospital</span><input name="clinic" value="${esc(me.clinic)}" maxlength="80"></label>
-              <label class="field"><span>Especialidad</span><select name="specialty">${SPECIALTIES.map((s) => `<option${s === me.specialty ? ' selected' : ''}>${s}</option>`).join('')}</select></label>
-              <label class="field"><span>Nº de colegiado</span><input name="license" value="${esc(me.license)}" maxlength="30"></label>
-              <label class="field"><span>Teléfono de la clínica</span><input name="phone" value="${esc(me.phone)}" maxlength="30"></label>
-              <label class="field"><span>Horario</span><input name="schedule" value="${esc(me.schedule)}" placeholder="L-V 9:00-20:00" maxlength="80"></label>
-            ` : ''}
-            <button class="btn primary">Guardar cambios</button>
-          </form>
-        </div>
-
-        ${!vet ? `
-        <div class="card edit-card">
-          <h3>${I.paw} Mis mascotas</h3>
-          <div class="pets-list">
-            ${(me.pets || []).map((p, i) => `
-              <div class="pet-row"><span class="pet-emoji sm">${esc(p.name.charAt(0).toUpperCase())}</span>
-                <div class="grow"><b>${esc(p.name)}</b><br><small class="muted">${esc([p.species, p.breed, p.age].filter(Boolean).join(' · '))}</small></div>
-                <button class="icon-btn" data-action="del-pet" data-i="${i}" aria-label="Eliminar">${I.trash}</button></div>`).join('') || '<p class="muted">Aún no has añadido mascotas.</p>'}
-          </div>
-          <form id="pet-form" class="pet-form">
-            <input name="name" placeholder="Nombre" required maxlength="30">
-            <select name="species">${SPECIES.map((s) => `<option>${s}</option>`).join('')}</select>
-            <input name="breed" placeholder="Raza" maxlength="40">
-            <input name="age" placeholder="Edad" maxlength="20">
-            <button class="btn primary sm">Añadir</button>
-          </form>
-        </div>` : ''}
-
-        ${MANAGED ? '' : `<div class="card edit-card">
-          <h3>Cambiar contraseña</h3>
-          <form id="pw-form" class="stack">
-            <input name="old" type="password" placeholder="Contraseña actual" required autocomplete="current-password">
-            <input name="new" type="password" placeholder="Nueva contraseña" minlength="6" required autocomplete="new-password">
-            <button class="btn ghost">Actualizar contraseña</button>
-          </form>
-        </div>`}
-
-        <div class="card edit-card danger-zone">
-          <h3>Zona de peligro</h3>
-          <p class="muted tiny">${FB || MANAGED ? 'Al eliminar tu cuenta se borran tu perfil, tus publicaciones, historias, mensajes enviados y citas.' : 'Modo demo: los datos de Visvet se guardan solo en este navegador.'}</p>
-          <div class="row-wrap">
-            ${FB ? '' : '<button class="btn ghost" data-action="reset-demo">Restablecer datos de demostración</button>'}
-            <button class="btn danger" data-action="delete-account">Eliminar mi cuenta</button>
-          </div>
-        </div>
-      </div>`,
-      mount: () => {
-        $('#avatar-input').onchange = async (e) => {
-          const f = e.target.files[0];
-          if (!f) return;
-          try { S.updateUser(me.id, { avatar: await readImage(f, 320, 0.85) }); toast('Foto de perfil actualizada'); render(); }
-          catch (ex) { toast(ex.message, 'error'); }
-        };
-        $('#profile-form').onsubmit = (e) => {
-          e.preventDefault();
-          const f = e.target;
-          const patch = { name: f.name.value.trim(), bio: f.bio.value.trim(), city: f.city.value.trim() };
-          if (f.email) patch.email = f.email.value.trim();
-          if (vet) ['clinic', 'specialty', 'license', 'phone', 'schedule'].forEach((k) => (patch[k] = f[k].value.trim()));
-          S.updateUser(me.id, patch);
-          toast('Perfil actualizado ✅');
-          render();
-        };
-        const pf = $('#pet-form');
-        if (pf) pf.onsubmit = (e) => {
-          e.preventDefault();
-          const f = e.target;
-          const pets = [...(me.pets || []), { name: f.name.value.trim(), species: f.species.value, breed: f.breed.value.trim(), age: f.age.value.trim() }];
-          S.updateUser(me.id, { pets });
-          toast(`${f.name.value.trim()} añadido/a 🐾`);
-          render();
-        };
-        if ($('#pw-form')) $('#pw-form').onsubmit = async (e) => {
-          e.preventDefault();
-          try { await S.changePassword(me.id, e.target.old.value, e.target.new.value); toast('Contraseña actualizada 🔒'); e.target.reset(); }
-          catch (ex) { toast(ex.message, 'error'); }
-        };
-      },
-    };
-  }
-
-  /* ======================================================
-   * Citas
-   * ====================================================== */
-  let apptFilter = 'upcoming';
-  function AppointmentsPage() {
-    const vet = me.role === 'vet';
-    const all = S.appointmentsFor(me.id);
-    const t = today();
-    const filters = {
-      upcoming: { label: 'Próximas', fn: (a) => a.date >= t && ['pendiente', 'confirmada'].includes(a.status) },
-      pendiente: { label: 'Pendientes', fn: (a) => a.status === 'pendiente' },
-      history: { label: 'Historial', fn: (a) => a.date < t || ['completada', 'rechazada', 'cancelada'].includes(a.status) },
-      all: { label: 'Todas', fn: () => true },
-    };
-    const list = all.filter(filters[apptFilter].fn);
-    if (apptFilter === 'history') list.reverse();
-
-    const stats = vet ? `
-      <div class="stats-row">
-        <div class="stat card"><b>${all.filter((a) => a.status === 'pendiente').length}</b><span>Solicitudes pendientes</span></div>
-        <div class="stat card"><b>${all.filter((a) => a.status === 'confirmada' && a.date === t).length}</b><span>Citas hoy</span></div>
-        <div class="stat card"><b>${all.filter((a) => a.status === 'confirmada' && a.date >= t).length}</b><span>Confirmadas próximas</span></div>
-        <div class="stat card"><b>${new Set(all.map((a) => a.clientId)).size}</b><span>Clientes</span></div>
-      </div>` : '';
-
-    return `
-    <div class="page">
-      <div class="page-head">
-        <h2 class="page-title">${vet ? 'Agenda de la clínica' : 'Mis citas'}</h2>
-        ${!vet ? `<button class="btn primary" data-action="request-appt">${I.calendar} Pedir cita</button>` : ''}
-      </div>
-      ${stats}
-      <div class="tabs">${Object.entries(filters).map(([k, f]) => `<button class="tab${apptFilter === k ? ' active' : ''}" data-action="appt-filter" data-f="${k}">${f.label} <span class="count">${all.filter(f.fn).length}</span></button>`).join('')}</div>
-      <div class="appt-list">
-        ${list.map(apptCard).join('') || `<div class="empty big">${I.calendar}<h3>No hay citas aquí</h3>${!vet ? '<p class="muted">Pide cita con tu veterinario desde su perfil o con el botón «Pedir cita».</p>' : '<p class="muted">Cuando un cliente solicite una cita aparecerá aquí.</p>'}</div>`}
-      </div>
-    </div>`;
-  }
-
-  function apptCard(a) {
-    const vet = me.id === a.vetId;
-    const other = S.user(vet ? a.clientId : a.vetId);
-    const st = STATUS[a.status] || STATUS.pendiente;
-    const past = a.date < today();
-    return `
-    <div class="appt card">
-      <div class="appt-date"><b>${a.date.slice(8)}</b><span>${new Date(a.date + 'T12:00').toLocaleDateString('es-ES', { month: 'short' })}</span><small>${esc(a.time)}</small></div>
-      <div class="appt-main">
-        <div class="appt-top">
-          <span class="status ${st.cls}">${st.label}</span>
-          <small class="muted">${fmtDate(a.date)} · ${esc(a.time)}</small>
-        </div>
-        <h4>${esc(a.petName)} <small class="muted">${a.species ? esc(a.species) : ''}</small></h4>
-        <p>${esc(a.reason)}</p>
-        ${other ? `<div class="appt-who">${avatar(other, 24)} ${userLink(other)} <small class="muted">${vet ? 'Cliente' : esc(other.clinic || 'Veterinario/a')}</small></div>` : ''}
-        ${a.vetNote ? `<div class="vet-note">${I.stethoscope} <span><b>Nota del veterinario:</b> ${esc(a.vetNote)}</span></div>` : ''}
-        <div class="appt-actions">
-          ${vet && a.status === 'pendiente' ? `
-            <button class="btn primary sm" data-action="appt-status" data-id="${a.id}" data-s="confirmada">${I.check} Confirmar</button>
-            <button class="btn ghost sm" data-action="appt-status" data-id="${a.id}" data-s="rechazada">Rechazar</button>` : ''}
-          ${vet && a.status === 'confirmada' ? `<button class="btn primary sm" data-action="appt-status" data-id="${a.id}" data-s="completada">Marcar completada</button>` : ''}
-          ${vet && ['pendiente', 'confirmada', 'completada'].includes(a.status) ? `<button class="btn ghost sm" data-action="appt-note" data-id="${a.id}">Añadir nota</button>` : ''}
-          ${!vet && ['pendiente', 'confirmada'].includes(a.status) && !past ? `<button class="btn ghost sm" data-action="appt-status" data-id="${a.id}" data-s="cancelada">Cancelar cita</button>` : ''}
-          ${other ? `<a href="#/messages/${esc(other.username)}" class="btn ghost sm">${I.message} Mensaje</a>` : ''}
-        </div>
-      </div>
-    </div>`;
-  }
-
-  function requestAppointmentModal(vetId) {
-    const vets = S.data.users.filter((u) => u.role === 'vet');
-    if (!vets.length) return toast('Todavía no hay veterinarios registrados.', 'error');
-    const pets = me.pets || [];
-    openModal(`
-      <div class="modal-head"><h3>${I.calendar} Pedir cita</h3><button class="icon-btn" data-action="close-modal">${I.close}</button></div>
-      <form class="modal-body stack" id="appt-form">
-        <label class="field"><span>Veterinario/a</span>
-          <select name="vetId" required>
-            ${vets.map((v) => `<option value="${v.id}"${v.id === vetId ? ' selected' : ''}>${esc(v.name)} — ${esc(v.clinic || v.specialty || '')}${v.city ? ' (' + esc(v.city) + ')' : ''}</option>`).join('')}
-          </select></label>
-        <label class="field"><span>Mascota</span>
-          ${pets.length ? `<select name="pet">${pets.map((p, i) => `<option value="${i}">${esc(p.name)} (${esc(p.species)})</option>`).join('')}<option value="other">Otra mascota…</option></select>` : ''}
-          <input name="petName" placeholder="Nombre de la mascota" ${pets.length ? 'hidden' : 'required'} maxlength="30">
-        </label>
-        <div class="grid-2">
-          <label class="field"><span>Fecha</span><input type="date" name="date" min="${today()}" required></label>
-          <label class="field"><span>Hora</span><input type="time" name="time" min="08:00" max="21:00" step="900" required></label>
-        </div>
-        <label class="field"><span>Motivo de la consulta</span><textarea name="reason" rows="3" required maxlength="400" placeholder="Ej.: vacunación anual, cojea de la pata trasera, revisión…"></textarea></label>
-        <p class="tiny muted">El veterinario recibirá tu solicitud y te avisaremos cuando la confirme.</p>
-        <button class="btn primary block">Enviar solicitud</button>
-      </form>`);
-    const f = $('#appt-form');
-    if (f.pet) f.pet.onchange = () => { const o = f.pet.value === 'other'; f.petName.hidden = !o; f.petName.required = o; };
-    f.onsubmit = (e) => {
-      e.preventDefault();
-      let petName = f.petName.value.trim(), species = '';
-      if (f.pet && f.pet.value !== 'other') { const p = pets[+f.pet.value]; petName = p.name; species = p.species; }
-      S.requestAppointment({ clientId: me.id, vetId: f.vetId.value, petName, species, date: f.date.value, time: f.time.value, reason: f.reason.value.trim() });
-      closeModal();
-      toast('Solicitud de cita enviada 📅');
-      apptFilter = 'upcoming';
-      go('#/appointments');
-    };
-  }
-
-  /* ======================================================
-   * Mensajes
-   * ====================================================== */
-  function MessagesPage(username) {
-    const other = username ? S.userByUsername(username) : null;
-    if (other) S.markThreadRead(me.id, other.id);
-    const convs = S.conversations(me.id);
-    if (other && !convs.some((c) => c.otherId === other.id)) convs.unshift({ otherId: other.id, last: null, unread: 0 });
-
-    const thread = other ? S.thread(me.id, other.id) : [];
-    return {
-      html: `
-      <div class="dm${other ? ' has-thread' : ''}">
-        <aside class="dm-list">
-          <div class="dm-list-head"><b>${esc(me.username)}</b><button class="icon-btn" data-action="new-dm" aria-label="Nuevo mensaje">${I.plus}</button></div>
-          ${convs.map(({ otherId, last, unread }) => {
-            const u = S.user(otherId);
-            if (!u) return '';
-            const preview = last ? (last.postId ? '📷 Compartió una publicación' : (last.from === me.id ? 'Tú: ' : '') + last.text) : 'Nueva conversación';
-            return `<a href="#/messages/${esc(u.username)}" class="dm-item${other && other.id === u.id ? ' active' : ''}${unread ? ' unread' : ''}">
-              ${avatar(u, 48)}
-              <span class="grow"><span>${esc(u.name)} ${badge(u)}</span><small class="muted ellipsis">${esc(preview)}${last ? ' · ' + timeAgo(last.createdAt) : ''}</small></span>
-              ${unread ? '<span class="unread-dot"></span>' : ''}
-            </a>`;
-          }).join('') || '<p class="empty">Aún no tienes conversaciones.</p>'}
-        </aside>
-        <section class="dm-thread">
-          ${other ? `
-            <header class="dm-head">
-              <a href="#/messages" class="icon-btn only-mobile" aria-label="Volver">${I.back}</a>
-              <a href="#/u/${esc(other.username)}">${avatar(other, 36)}</a>
-              <div class="grow"><a href="#/u/${esc(other.username)}"><b>${esc(other.name)}</b> ${badge(other)}</a><br><small class="muted">${roleLabel(other)}</small></div>
-              ${other.role === 'vet' && me.role === 'client' ? `<button class="btn accent sm" data-action="request-appt" data-vet="${other.id}">${I.calendar} Cita</button>` : ''}
-            </header>
-            <div class="dm-msgs" id="dm-msgs">
-              <div class="dm-intro">${avatar(other, 80)}<b>${esc(other.name)}</b><small class="muted">${esc(other.username)} · Visvet</small><a href="#/u/${esc(other.username)}" class="btn ghost sm">Ver perfil</a></div>
-              ${thread.map((m, i) => {
-                const mine = m.from === me.id;
-                const showTime = i === 0 || m.createdAt - thread[i - 1].createdAt > 3600 * 1000;
-                const sp = m.postId ? S.post(m.postId) : null;
-                return `${showTime ? `<div class="dm-time">${new Date(m.createdAt).toLocaleString('es-ES', { dateStyle: 'medium', timeStyle: 'short' })}</div>` : ''}
-                  <div class="bubble-row${mine ? ' mine' : ''}">
-                    ${sp ? `<a href="#/p/${sp.id}" class="shared-post"><img ${imgSrc(sp.image)} alt=""><span>${esc(S.user(sp.userId)?.username || '')}</span></a>` : ''}
-                    ${m.text ? `<div class="bubble">${richText(m.text)}</div>` : ''}
-                  </div>`;
-              }).join('')}
-            </div>
-            <form class="dm-form" id="dm-form">
-              <input name="text" placeholder="Escribe un mensaje…" autocomplete="off" maxlength="1000">
-              <button class="link-btn">Enviar</button>
-            </form>
-          ` : `
-            <div class="dm-empty">
-              <span class="big-ico">${I.message}</span>
-              <h3>Tus mensajes</h3>
-              <p class="muted">${me.role === 'vet' ? 'Responde a las dudas de tus clientes de forma privada.' : 'Habla en privado con tu veterinario o con otros amantes de los animales.'}</p>
-              <button class="btn primary" data-action="new-dm">Enviar mensaje</button>
-            </div>`}
-        </section>
-      </div>`,
-      mount: () => {
-        const box = $('#dm-msgs');
-        if (box) box.scrollTop = box.scrollHeight;
-        const f = $('#dm-form');
-        if (f) {
-          if (window.matchMedia('(min-width: 768px)').matches) f.text.focus();
-          f.onsubmit = (e) => {
-            e.preventDefault();
-            const text = f.text.value;
-            if (!text.trim()) return;
-            S.sendMessage(me.id, other.id, text);
-            render();
-            const nf = $('#dm-form');
-            if (nf) nf.text.focus();
-          };
-        }
-      },
-    };
-  }
-
-  function pickUserModal(title, onPick) {
-    const listHtml = (q) => {
-      const ql = q.toLowerCase();
-      const users = S.data.users.filter((u) => u.id !== me.id && (!ql || (u.username + ' ' + u.name).toLowerCase().includes(ql)))
-        .sort((a, b) => me.following.includes(b.id) - me.following.includes(a.id));
-      return users.map((u) => `<button class="user-row as-btn" data-pick="${u.id}">${avatar(u, 40)}<span class="grow left"><span>${esc(u.username)} ${badge(u)}</span><small class="muted block">${esc(u.name)}</small></span></button>`).join('') || '<p class="empty">Sin resultados</p>';
-    };
-    openModal(`
-      <div class="modal-head"><h3>${esc(title)}</h3><button class="icon-btn" data-action="close-modal">${I.close}</button></div>
-      <div class="modal-search">${I.search}<input id="pick-q" placeholder="Buscar…" autocomplete="off"></div>
-      <div class="modal-scroll" id="pick-list">${listHtml('')}</div>`);
-    const wire = () => $$('#pick-list [data-pick]').forEach((b) => (b.onclick = () => onPick(S.user(b.dataset.pick))));
-    wire();
-    $('#pick-q').oninput = (e) => { $('#pick-list').innerHTML = listHtml(e.target.value); wire(); };
-  }
-
-  /* ======================================================
-   * Notificaciones
-   * ====================================================== */
-  function notifText(n) {
-    switch (n.type) {
-      case 'like': return 'le ha gustado tu publicación.';
-      case 'comment': return `ha comentado: «${esc(n.text || '')}»`;
-      case 'follow': return 'ha empezado a seguirte.';
-      case 'appointment_request': return `ha solicitado una cita: <b>${esc(n.text || '')}</b>`;
-      case 'appointment_confirmada': return `ha <b>confirmado</b> tu cita: ${esc(n.text || '')}`;
-      case 'appointment_rechazada': return `ha rechazado tu solicitud de cita: ${esc(n.text || '')}`;
-      case 'appointment_completada': return `ha marcado como completada la cita de ${esc(n.text || '')}`;
-      case 'appointment_cancelada': return `ha cancelado la cita: ${esc(n.text || '')}`;
-      default: return '';
-    }
-  }
-
-  function NotificationsPage() {
-    const list = S.notificationsFor(me.id);
-    const groups = [
-      ['Nuevas', list.filter((n) => !n.read)],
-      ['Hoy', list.filter((n) => n.read && Date.now() - n.createdAt < 86400000)],
-      ['Anteriores', list.filter((n) => n.read && Date.now() - n.createdAt >= 86400000)],
-    ];
-    return {
-      html: `
-      <div class="page narrow">
-        <h2 class="page-title">Notificaciones</h2>
-        ${list.length ? groups.filter(([, l]) => l.length).map(([title, l]) => `
-          <h4 class="section-title">${title}</h4>
-          <div class="card notif-list">
-            ${l.map((n) => {
-              const from = S.user(n.fromId);
-              if (!from) return '';
-              const p = n.postId ? S.post(n.postId) : null;
-              const isAppt = n.type.startsWith('appointment');
-              const right = p ? `<a href="#/p/${p.id}" class="notif-thumb"><img ${imgSrc(p.image)} alt=""></a>`
-                : n.type === 'follow' && !me.following.includes(from.id) ? `<button class="btn primary sm" data-action="follow" data-id="${from.id}">Seguir</button>`
-                : isAppt ? `<a href="#/appointments" class="btn ghost sm">Ver</a>` : '';
-              return `<div class="notif${n.read ? '' : ' unread'}">
-                <a href="#/u/${esc(from.username)}">${avatar(from, 44)}</a>
-                <p class="grow">${userLink(from)} ${notifText(n)} <span class="muted">${timeAgo(n.createdAt)}</span></p>
-                ${right}
-              </div>`;
-            }).join('')}
-          </div>`).join('') : `<div class="empty big">${I.heart}<h3>Sin actividad todavía</h3><p class="muted">Cuando alguien te siga, comente o pida cita, lo verás aquí.</p></div>`}
-      </div>`,
-      mount: () => {
-        // marcar como leídas al salir de la página para que se vea "Nuevas" mientras tanto
-        setTimeout(() => S.markNotificationsRead(me.id), 400);
-      },
-    };
-  }
-
-  function NotFound(msg = 'La página que buscas no existe.') {
-    return `<div class="page narrow"><div class="empty big">${I.paw}<h3>¡Ups! Por aquí no hay nada</h3><p class="muted">${esc(msg)}</p><a href="#/" class="btn primary">Volver al inicio</a></div></div>`;
-  }
-
-  /* ======================================================
-   * Listas en modal (likes / seguidores)
-   * ====================================================== */
-  function usersModal(title, users) {
-    openModal(`
-      <div class="modal-head"><h3>${esc(title)}</h3><button class="icon-btn" data-action="close-modal">${I.close}</button></div>
-      <div class="modal-scroll">${users.map((u) => userRow(u, true)).join('') || '<p class="empty">Nadie por aquí todavía.</p>'}</div>`);
-  }
-
-  /* ======================================================
-   * Acciones (delegación de eventos)
-   * ====================================================== */
-  const actions = {
-    'close-modal': () => closeModal(),
-    'close-modal-bg': (el, e) => { if (e.target === el) closeModal(); },
-    go: (el) => go(el.dataset.href),
-    back: () => {
-      if (MEM) { if (memStack.length) { memHash = memStack.pop(); closeModal(); render(); } else go('#/'); return; }
-      if (history.length > 1) history.back(); else go('#/');
-    },
-    logout: async () => {
-      if (await confirmModal('¿Cerrar sesión?', '', 'Cerrar sesión')) {
-        await S.logout(); setHash('#/login'); render();
-      }
-    },
-    like: (el) => { S.toggleLike(el.dataset.id, me.id); refreshPost(el.dataset.id); },
-    save: (el) => {
-      S.toggleSave(el.dataset.id, me.id);
-      const saved = S.post(el.dataset.id).savedBy.includes(me.id);
-      toast(saved ? 'Guardado en tu colección 📌' : 'Eliminado de guardados');
-      refreshPost(el.dataset.id);
-    },
-    'dbl-like': () => {}, // gestionado con dblclick
-    follow: (el) => {
-      const was = me.following.includes(el.dataset.id);
-      S.toggleFollow(me.id, el.dataset.id);
-      if (!was) toast(`Ahora sigues a ${S.user(el.dataset.id).username}`);
-      const modalOpen = $('#modal-root').innerHTML;
-      if (modalOpen) {
-        el.textContent = was ? 'Seguir' : 'Siguiendo';
-        el.classList.toggle('primary', was); el.classList.toggle('ghost', !was);
-        el.classList.toggle('link-btn', false);
-        el.classList.add('btn', 'sm');
-      } else render();
-    },
-    'show-likes': (el) => usersModal('Me gusta', S.post(el.dataset.id).likes.map((id) => S.user(id)).filter(Boolean)),
-    'show-followers': (el) => usersModal('Seguidores', S.followers(el.dataset.id)),
-    'show-following': (el) => usersModal('Seguidos', S.user(el.dataset.id).following.map((id) => S.user(id)).filter(Boolean)),
-    'del-comment': async (el) => {
-      if (await confirmModal('¿Eliminar comentario?', '', 'Eliminar', true)) { S.deleteComment(el.dataset.post, el.dataset.id); refreshPost(el.dataset.post); }
-    },
-    'post-options': (el) => {
-      const p = S.post(el.dataset.id);
-      const own = p.userId === me.id;
-      const author = S.user(p.userId);
-      openModal(`<div class="modal-list">
-        ${own ? '<button class="danger" data-opt="delete">Eliminar publicación</button>' : `<button class="${me.following.includes(author.id) ? 'danger' : 'primary-text'}" data-opt="follow">${me.following.includes(author.id) ? 'Dejar de seguir' : 'Seguir'}</button>`}
-        <button data-opt="open">Ir a la publicación</button>
-        <button data-opt="profile">Ver perfil de ${esc(author.username)}</button>
-        <button data-opt="copy">Copiar enlace</button>
-        <button data-opt="cancel">Cancelar</button>
-      </div>`, { cls: 'small' });
-      $$('#modal-root [data-opt]').forEach((b) => (b.onclick = async () => {
-        const o = b.dataset.opt;
-        closeModal();
-        if (o === 'delete') {
-          if (await confirmModal('¿Eliminar publicación?', 'Esta acción no se puede deshacer.', 'Eliminar', true)) {
-            S.deletePost(p.id); toast('Publicación eliminada');
-            if (parseHash().name === 'p') go('#/u/' + me.username); else render();
-          }
-        } else if (o === 'follow') { S.toggleFollow(me.id, author.id); render(); }
-        else if (o === 'open') go('#/p/' + p.id);
-        else if (o === 'profile') go('#/u/' + author.username);
-        else if (o === 'copy') copyLink('#/p/' + p.id);
-      }));
-    },
-    share: (el) => {
-      const postId = el.dataset.id;
-      pickUserModal('Compartir con…', (u) => {
-        S.sendMessage(me.id, u.id, '', { postId });
-        closeModal();
-        toast(`Enviado a ${u.username} ✉️`);
-      });
-      const list = $('#modal-root .modal');
-      list.insertAdjacentHTML('beforeend', `<div class="modal-foot"><button class="btn ghost block" id="copy-link">Copiar enlace</button></div>`);
-      $('#copy-link').onclick = () => { copyLink('#/p/' + postId); closeModal(); };
-    },
-    'open-story': (el, e) => {
-      if (e.target.closest('.story-plus')) return actions['add-story']();
-      e.preventDefault();
-      openStories(el.dataset.user);
-    },
-    'add-story': () => { const i = $('#story-input'); if (i) i.click(); else go('#/create'); if (!i) draft.mode = 'story'; },
-    'story-next': () => nextStory(),
-    'story-prev': () => prevStory(),
-    'del-story': async (el) => {
-      clearTimeout(story.timer);
-      const id = el.dataset.id;
-      S.deleteStory(id);
-      closeModal();
-      toast('Historia eliminada');
-    },
-    'create-mode': (el) => { draft.mode = el.dataset.mode; render(); },
-    'pick-cat': (el) => { draft.category = el.dataset.cat; $$('[data-action="pick-cat"]').forEach((b) => b.classList.toggle('active', b === el)); },
-    'clear-image': () => { draft.image = null; render(); },
-    'profile-tab': (el) => { profileTab = el.dataset.tab; render(); },
-    'appt-filter': (el) => { apptFilter = el.dataset.f; render(); },
-    'request-appt': (el) => requestAppointmentModal(el.dataset.vet),
-    'appt-status': async (el) => {
-      const s = el.dataset.s;
-      const labels = { rechazada: '¿Rechazar esta solicitud?', cancelada: '¿Cancelar la cita?' };
-      if (labels[s] && !(await confirmModal(labels[s], 'Avisaremos a la otra persona.', 'Sí', true))) return;
-      let note;
-      if (s === 'confirmada') note = undefined;
-      S.setAppointmentStatus(el.dataset.id, s, me.id, note);
-      toast({ confirmada: 'Cita confirmada ✅', rechazada: 'Solicitud rechazada', completada: 'Cita completada', cancelada: 'Cita cancelada' }[s]);
-      render();
-    },
-    'appt-note': async (el) => {
-      const a = S.data.appointments.find((x) => x.id === el.dataset.id);
-      const note = await promptModal('Nota para el cliente', 'Indicaciones, preparación o resultado de la consulta', a.vetNote || 'Ej.: venid en ayunas');
-      if (note !== null) { S.setAppointmentNote(a.id, note); render(); toast('Nota guardada'); }
-    },
-    'new-dm': () => pickUserModal('Nuevo mensaje', (u) => { closeModal(); go('#/messages/' + u.username); }),
-    'del-pet': async (el) => {
-      const pets = [...(me.pets || [])];
-      const p = pets[+el.dataset.i];
-      if (await confirmModal(`¿Eliminar a ${p.name}?`, '', 'Eliminar', true)) {
-        pets.splice(+el.dataset.i, 1); S.updateUser(me.id, { pets }); render();
-      }
-    },
-    'remove-avatar': () => { S.updateUser(me.id, { avatar: '' }); render(); },
-    'reset-demo': async () => {
-      if (await confirmModal('¿Restablecer Visvet?', 'Se borrarán todas las cuentas y publicaciones de este navegador y se cargarán los datos de demostración.', 'Restablecer', true)) {
-        await S.reset(); setHash('#/login'); render(); toast('Datos de demostración restaurados');
-      }
-    },
-    'delete-account': async () => {
-      if (!(await confirmModal('¿Eliminar tu cuenta?', 'Se borrarán tu perfil, publicaciones, mensajes y citas. No se puede deshacer.', 'Eliminar cuenta', true))) return;
-      let password;
-      if (FB) {
-        password = await inputModal('Confirma tu contraseña', 'Contraseña', 'password');
-        if (!password) return;
-      }
-      try {
-        await S.deleteUser(me.id, password);
-        setHash('#/login'); render(); toast('Cuenta eliminada');
-      } catch (e) { toast(e.message, 'error'); }
-    },
-    forgot: async () => {
-      const lf = $('#login-form');
-      const email = await inputModal('Recuperar contraseña', 'Te enviaremos un correo para crear una nueva contraseña.', 'email', lf ? lf.login.value : '');
-      if (!email) return;
-      try { await S.resetPassword(email); toast('Te hemos enviado un correo para restablecer la contraseña 📧'); }
-      catch (e) { toast(e.message, 'error'); }
-    },
-  };
-
-  function copyLink(hash) {
-    if (MEM) { toast('Para compartirla, envíala por mensaje con el botón de enviar ✈️'); return; }
-    const url = location.href.split('#')[0] + hash;
-    const done = () => toast('Enlace copiado 🔗');
-    if (navigator.clipboard && window.isSecureContext) navigator.clipboard.writeText(url).then(done, () => toast(url));
-    else toast(url);
-  }
-
-  document.addEventListener('click', (e) => {
-    const el = e.target.closest('[data-action]');
-    if (MEM) {
-      const a = e.target.closest('a[href^="#"]');
-      if (a && (!el || (el !== a && el.contains(a)) || (el === a && el.dataset.action === 'close-modal'))) {
-        e.preventDefault();
-        closeModal();
-        setHash(a.getAttribute('href'));
-        return;
-      }
-    }
-    if (!el) return;
-    const fn = actions[el.dataset.action];
-    if (!fn) return;
-    if (el.tagName === 'A' && el.dataset.action !== 'close-modal') e.preventDefault();
-    if (el.dataset.action === 'close-modal' && el.tagName === 'A') { closeModal(); return; }
-    fn(el, e);
-  });
-
-  // Doble clic / doble toque para dar "me gusta"
-  let lastTap = 0;
-  function dblLike(target) {
-    const media = target.closest('[data-action="dbl-like"]');
-    if (!media) return;
-    const id = media.dataset.id;
-    const p = S.post(id);
-    if (!p.likes.includes(me.id)) S.toggleLike(id, me.id);
-    const heart = media.querySelector('.big-heart');
-    heart.classList.remove('pop'); void heart.offsetWidth; heart.classList.add('pop');
-    setTimeout(() => refreshPost(id), 700);
-  }
-  document.addEventListener('dblclick', (e) => dblLike(e.target));
-  document.addEventListener('touchend', (e) => {
-    if (!e.target.closest('[data-action="dbl-like"]')) return;
-    const now = Date.now();
-    if (now - lastTap < 300) { e.preventDefault(); dblLike(e.target); }
-    lastTap = now;
-  });
-
-  document.addEventListener('submit', (e) => {
-    const f = e.target;
-    if (f.dataset.form === 'comment') {
-      e.preventDefault();
-      const text = f.text.value.trim();
-      if (!text) return;
-      S.addComment(f.dataset.id, me.id, text);
-      f.text.value = '';
-      refreshPost(f.dataset.id);
-    } else if (f.dataset.form === 'story-reply') {
-      e.preventDefault();
-      const text = f.text.value.trim();
-      if (!text) return;
-      S.sendMessage(me.id, f.dataset.to, '↪️ Respondió a tu historia: ' + text);
-      f.text.value = '';
-      toast('Respuesta enviada');
-      nextStory();
-    }
-  });
-
-  document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') closeModal();
-    if ($('#story-viewer') && !e.target.matches('input')) {
-      if (e.key === 'ArrowRight') nextStory();
-      if (e.key === 'ArrowLeft') prevStory();
-    }
-  });
-
-  if (!MEM) window.addEventListener('hashchange', () => { closeModal(); render(); });
-
-  // Si otra pestaña cambia los datos, refrescamos (sin perder lo que se escribe)
-  S.onChange(() => {
-    const active = document.activeElement;
-    if (active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA') && active.value) return;
-    if (!$('#modal-root').innerHTML) render();
-  });
-
-  /* ======================================================
-   * Arranque
-   * ====================================================== */
-  S.init().then(render).catch((e) => {
-    console.error(e);
-    $('#app').innerHTML = `<div class="page narrow"><div class="empty big"><h3>No se pudo iniciar Visvet</h3><p class="muted">${esc(e.message)}</p></div></div>`;
-  });
-})();
+boot();

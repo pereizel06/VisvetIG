@@ -1,97 +1,91 @@
 rules_version = '2';
 
-// Reglas de seguridad de Visvet para Cloud Firestore.
+// =====================================================================
+// Reglas de seguridad de Visvet (Cloud Firestore)
 // Cópialas en Firebase → Firestore Database → Reglas → Publicar.
+//
+// IMPORTANTE: sustituye ADMIN_EMAIL_AQUI por el correo de la cuenta
+// de la clínica (en minúsculas), el mismo que en js/config.js.
+// =====================================================================
 service cloud.firestore {
   match /databases/{database}/documents {
 
     function signedIn() { return request.auth != null; }
-    function me() { return request.auth.uid; }
-    function onlyChanged(keys) {
-      return request.resource.data.diff(resource.data).affectedKeys().hasOnly(keys);
+    function uid() { return request.auth.uid; }
+    // La clínica: su correo y verificado (nadie puede hacerse pasar por ella)
+    function isAdmin() {
+      return signedIn()
+        && request.auth.token.email == 'ADMIN_EMAIL_AQUI'
+        && request.auth.token.email_verified == true;
     }
-
-    // Nombres de usuario reservados (para que no se repitan)
-    match /usernames/{name} {
-      allow get: if true;
-      allow create: if signedIn()
-        && request.resource.data.uid == me()
-        && name.matches('^[a-z0-9._]{3,30}$');
-      allow delete: if signedIn() && resource.data.uid == me();
+    function petOwner(petId) {
+      return get(/databases/$(database)/documents/pets/$(petId)).data.ownerId;
     }
+    function changes() { return request.resource.data.diff(resource.data).affectedKeys(); }
 
-    // Perfiles: los ve cualquier usuario registrado; solo los edita su dueño
-    match /users/{uid} {
+    // Datos de la clínica (horario, teléfono…): todos los leen, solo la clínica edita
+    match /clinic/{doc} {
       allow read: if signedIn();
-      allow create: if signedIn() && uid == me()
-        && request.resource.data.role in ['vet', 'client'];
-      allow update: if signedIn() && uid == me()
-        && request.resource.data.role == resource.data.role
-        && request.resource.data.username == resource.data.username;
-      allow delete: if signedIn() && uid == me();
+      allow write: if isAdmin();
     }
 
-    // Publicaciones: el autor la gestiona; los demás solo pueden
-    // dar «me gusta», guardar y comentar
-    match /posts/{id} {
-      allow read: if signedIn();
-      allow create: if signedIn() && request.resource.data.userId == me();
-      allow update: if signedIn() && (
-        (resource.data.userId == me() && request.resource.data.userId == me())
-        || onlyChanged(['likes', 'savedBy', 'comments']));
-      allow delete: if signedIn() && resource.data.userId == me();
+    // Perfiles de usuario
+    match /users/{userId} {
+      allow read: if signedIn() && (userId == uid() || isAdmin());
+      allow create, update: if signedIn() && userId == uid();
+      allow delete: if signedIn() && (userId == uid() || isAdmin());
     }
 
-    // Fotos (comprimidas) de publicaciones e historias
-    match /media/{id} {
-      allow read: if signedIn();
-      allow create: if signedIn()
-        && request.resource.data.userId == me()
-        && request.resource.data.data is string
-        && request.resource.data.data.size() < 1000000;
-      allow delete: if signedIn() && resource.data.userId == me();
+    // Animales: cada cliente ve y gestiona los suyos; la clínica, todos
+    match /pets/{petId} {
+      allow read: if isAdmin() || (signedIn() && resource.data.ownerId == uid());
+      allow create: if isAdmin() || (signedIn() && request.resource.data.ownerId == uid());
+      allow update: if isAdmin() || (signedIn() && resource.data.ownerId == uid()
+                        && request.resource.data.ownerId == uid()
+                        && !changes().hasAny(['pendingAmount', 'readByAdminAt']));
+      allow delete: if isAdmin() || (signedIn() && resource.data.ownerId == uid());
+
+      // Chat privado de cada animal con la clínica
+      match /messages/{msgId} {
+        allow read: if isAdmin() || (signedIn() && petOwner(petId) == uid());
+        allow create: if (isAdmin() && request.resource.data.fromAdmin == true && request.resource.data.from == uid())
+                      || (signedIn() && petOwner(petId) == uid()
+                          && request.resource.data.from == uid() && request.resource.data.fromAdmin == false);
+        allow update, delete: if isAdmin();
+      }
+
+      // Cartilla: el cliente la lee; solo la clínica escribe
+      match /records/{recId} {
+        allow read: if isAdmin() || (signedIn() && petOwner(petId) == uid());
+        allow write: if isAdmin();
+      }
     }
 
-    // Historias (24 h)
-    match /stories/{id} {
-      allow read: if signedIn();
-      allow create: if signedIn() && request.resource.data.userId == me();
-      allow update: if signedIn() && onlyChanged(['seenBy']);
-      allow delete: if signedIn() && resource.data.userId == me();
+    // Citas
+    match /appointments/{apptId} {
+      allow read: if isAdmin() || (signedIn() && resource.data.ownerId == uid());
+      allow create: if isAdmin() || (signedIn() && request.resource.data.ownerId == uid()
+                        && request.resource.data.status == 'pendiente');
+      allow update: if isAdmin() || (signedIn() && resource.data.ownerId == uid()
+                        && changes().hasOnly(['status']) && request.resource.data.status == 'cancelada');
+      allow delete: if isAdmin() || (signedIn() && resource.data.ownerId == uid());
     }
 
-    // Citas: solo las ven el cliente y el veterinario implicados.
-    // El cliente solicita y puede cancelar; el veterinario confirma,
-    // rechaza, completa y añade notas.
-    match /appointments/{id} {
-      allow read: if signedIn()
-        && (resource.data.clientId == me() || resource.data.vetId == me());
-      allow create: if signedIn()
-        && request.resource.data.clientId == me()
-        && request.resource.data.status == 'pendiente';
-      allow update: if signedIn() && (
-        (resource.data.vetId == me() && onlyChanged(['status', 'vetNote']))
-        || (resource.data.clientId == me() && onlyChanged(['status'])
-            && request.resource.data.status == 'cancelada'));
-      allow delete: if signedIn()
-        && (resource.data.clientId == me() || resource.data.vetId == me());
-    }
+    // Archivos (troceados): los ve el dueño del animal y la clínica
+    match /files/{fileId} {
+      allow read: if isAdmin() || (signedIn() && resource.data.ownerId == uid());
+      allow create: if signedIn() && request.resource.data.createdBy == uid()
+                    && (isAdmin() || request.resource.data.ownerId == uid());
+      allow delete: if isAdmin() || (signedIn() && resource.data.createdBy == uid());
 
-    // Mensajes privados: solo los ven emisor y receptor
-    match /messages/{id} {
-      allow read: if signedIn()
-        && (resource.data.from == me() || resource.data.to == me());
-      allow create: if signedIn()
-        && request.resource.data.from == me()
-        && request.resource.data.read == false;
-      allow update: if signedIn() && resource.data.to == me() && onlyChanged(['read']);
-      allow delete: if signedIn() && resource.data.from == me();
-    }
-
-    // Notificaciones: solo las ve su destinatario
-    match /notifications/{id} {
-      allow read, update, delete: if signedIn() && resource.data.userId == me();
-      allow create: if signedIn() && request.resource.data.fromId == me();
+      match /chunks/{n} {
+        allow read: if isAdmin()
+                    || (signedIn() && get(/databases/$(database)/documents/files/$(fileId)).data.ownerId == uid());
+        allow create: if isAdmin()
+                    || (signedIn() && get(/databases/$(database)/documents/files/$(fileId)).data.createdBy == uid());
+        allow delete: if isAdmin()
+                    || (signedIn() && get(/databases/$(database)/documents/files/$(fileId)).data.createdBy == uid());
+      }
     }
   }
 }
