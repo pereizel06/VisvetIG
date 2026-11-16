@@ -4,3 +4,4 @@ node_modules/
 visvet.zip
 firebase-debug.log
 firestore-debug.log
+functions/node_modules/

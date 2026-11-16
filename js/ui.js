@@ -1,4 +1,4 @@
-/* Visvet — utilidades de interfaz: iconos, formatos, avisos, hojas y archivos */
+/* Barbería — utilidades de interfaz: iconos, formatos, avisos, hojas y archivos */
 
 export const $ = (s, r = document) => r.querySelector(s);
 export const $$ = (s, r = document) => Array.from(r.querySelectorAll(s));
@@ -53,33 +53,18 @@ export const I = {
   image: sv('<rect x="3.5" y="4.5" width="17" height="15" rx="3"/><circle cx="9" cy="10" r="1.8"/><path d="m20.5 16-5-5-8.5 8.5"/>'),
   sun: sv('<circle cx="12" cy="12" r="4"/><path d="M12 2.5v2M12 19.5v2M2.5 12h2M19.5 12h2M5.3 5.3l1.4 1.4M17.3 17.3l1.4 1.4M5.3 18.7l1.4-1.4M17.3 6.7l1.4-1.4"/>'),
   moon: sv('<path d="M19.5 14.5A8 8 0 0 1 9.5 4.5a8 8 0 1 0 10 10z"/>'),
+  scissors: sv('<circle cx="6" cy="6.5" r="2.8"/><circle cx="6" cy="17.5" r="2.8"/><path d="M8.3 8.2 20 18.5M8.3 15.8 20 5.5"/>'),
+  razor: sv('<path d="M3.5 14.5 14 4a2.1 2.1 0 0 1 3 3L6.5 17.5z"/><path d="m6.5 17.5 2 2.5h3.5M17 7l3.5 3.5"/>'),
+  star: sv('<path d="m12 3.5 2.6 5.3 5.9.9-4.3 4.1 1 5.8-5.2-2.8-5.2 2.8 1-5.8-4.3-4.1 5.9-.9z"/>'),
+  starFill: sv('<path fill="currentColor" d="m12 3.5 2.6 5.3 5.9.9-4.3 4.1 1 5.8-5.2-2.8-5.2 2.8 1-5.8-4.3-4.1 5.9-.9z"/>'),
+  chart: sv('<path d="M4 20V4M4 20h16"/><path d="M8 16v-4M12 16V8M16 16v-6M20 16v-9"/>'),
+  repeat: sv('<path d="M17 2.5 20.5 6 17 9.5"/><path d="M3.5 11.5V10A4 4 0 0 1 7.5 6h13M7 21.5 3.5 18 7 14.5"/><path d="M20.5 12.5V14a4 4 0 0 1-4 4h-13"/>'),
+  gift: sv('<rect x="3.5" y="8" width="17" height="4.5" rx="1.2"/><path d="M5 12.5V20h14v-7.5M12 8v12M12 8c-1.5-3.5-6-3.5-5.5-.5.3 1.4 3 .5 5.5.5zm0 0c1.5-3.5 6-3.5 5.5-.5-.3 1.4-3 .5-5.5.5z"/>'),
+  megaphone: sv('<path d="M3.5 10v4a1 1 0 0 0 1 1h2l5.5 4V5L6.5 9h-2a1 1 0 0 0-1 1zM15.5 8.5a5 5 0 0 1 0 7M18.5 5.5a9 9 0 0 1 0 13"/>'),
+  store: sv('<path d="M4 9.5V20h16V9.5M3 9.5l1.6-5h14.8L21 9.5c0 1.4-1.2 2.5-2.6 2.5S15.8 10.9 15.8 9.5c0 1.4-1.2 2.5-2.6 2.5h-2.4c-1.4 0-2.6-1.1-2.6-2.5 0 1.4-1.2 2.5-2.6 2.5S3 10.9 3 9.5z"/><path d="M9.5 20v-5h5v5"/>'),
+  key: sv('<circle cx="7.5" cy="15.5" r="4"/><path d="m10.5 12.5 9-9M16.5 6.5l3 3M14 9l2 2"/>'),
+  crown: sv('<path d="M3.5 8 7 11.5 12 5l5 6.5L20.5 8 19 18H5z"/><path d="M5 21h14"/>'),
   copy: sv('<rect x="8.5" y="8.5" width="12" height="12" rx="2.5"/><path d="M15.5 8.5V6A2.5 2.5 0 0 0 13 3.5H6A2.5 2.5 0 0 0 3.5 6v7A2.5 2.5 0 0 0 6 15.5h2.5"/>'),
-};
-
-/* ---------- Especies y tipos de documento ---------- */
-export const SPECIES = {
-  Perro: { hue: ['#ff9f43', '#ff6b6b'] },
-  Gato: { hue: ['#a78bfa', '#6366f1'] },
-  Conejo: { hue: ['#f9a8d4', '#ec4899'] },
-  Ave: { hue: ['#34d399', '#10b981'] },
-  Hurón: { hue: ['#fbbf24', '#d97706'] },
-  Reptil: { hue: ['#84cc16', '#15803d'] },
-  Roedor: { hue: ['#fcd34d', '#f59e0b'] },
-  Pez: { hue: ['#38bdf8', '#0ea5e9'] },
-  Caballo: { hue: ['#c08457', '#7c4a2d'] },
-  Otro: { hue: ['#5eead4', '#0d9488'] },
-};
-export const speciesGrad = (s) => { const h = (SPECIES[s] || SPECIES.Otro).hue; return `linear-gradient(135deg, ${h[0]}, ${h[1]})`; };
-
-export const RECORD_TYPES = {
-  diagnostico: { label: 'Diagnóstico', icon: 'stetho', color: '#0a84ff' },
-  vacuna: { label: 'Vacuna', icon: 'syringe', color: '#30d158' },
-  factura: { label: 'Factura', icon: 'invoice', color: '#ff9f0a' },
-  analitica: { label: 'Analítica', icon: 'flask', color: '#bf5af2' },
-  receta: { label: 'Receta', icon: 'pill', color: '#ff375f' },
-  radiografia: { label: 'Imagen / Rx', icon: 'xray', color: '#64d2ff' },
-  informe: { label: 'Informe', icon: 'doc', color: '#5e5ce6' },
-  otro: { label: 'Otro', icon: 'folder', color: '#8e8e93' },
 };
 
 /* ---------- Formatos ---------- */

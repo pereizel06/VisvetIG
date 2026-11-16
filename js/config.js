@@ -1,5 +1,5 @@
 /* =========================================================
- * Visvet — configuración
+ * Barbería — configuración
  * ---------------------------------------------------------
  * Pega aquí la configuración de la app web de tu proyecto
  * de Firebase (Configuración del proyecto → Tus apps → Web).
@@ -26,5 +26,10 @@ export const CONFIG = {
     appId: '1:123456789:web:abc123',
   },
   */
-  clinicName: 'Visvet',
+  // Nombre por defecto (el administrador lo cambia desde Ajustes)
+  appName: 'Mi Barbería',
+
+  // Clave pública para notificaciones push con la app cerrada
+  // (Firebase → Configuración del proyecto → Cloud Messaging → Certificados push web)
+  vapidKey: '',
 };

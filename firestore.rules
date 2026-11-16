@@ -1,97 +1,106 @@
 rules_version = '2';
 
 // =====================================================================
-// Reglas de seguridad de Visvet (Cloud Firestore)
+// Reglas de seguridad de la barbería (Cloud Firestore)
 // Cópialas tal cual en Firebase → Firestore Database → Reglas → Publicar.
 //
-// La cuenta de administración es la primera «cuenta de clínica» que se
-// crea desde la app (documento meta/admin). Después nadie más puede serlo.
+// Administrador: una cuenta normal que pulsa «Soy el administrador» e
+// introduce la súper contraseña. Aquí solo está su huella SHA-256: la
+// contraseña no aparece en ningún sitio. Solo puede haber uno.
 // =====================================================================
 service cloud.firestore {
   match /databases/{database}/documents {
 
     function signedIn() { return request.auth != null; }
     function uid() { return request.auth.uid; }
-    function adminPath() { return /databases/$(database)/documents/meta/admin; }
-    function isAdmin() {
-      return signedIn() && exists(adminPath()) && get(adminPath()).data.uid == request.auth.uid;
-    }
-    function petOwner(petId) {
-      return get(/databases/$(database)/documents/pets/$(petId)).data.ownerId;
+    function ownerPath() { return /databases/$(database)/documents/meta/owner; }
+    function isOwner() {
+      return signedIn() && exists(ownerPath()) && get(ownerPath()).data.uid == request.auth.uid;
     }
     function changes() { return request.resource.data.diff(resource.data).affectedKeys(); }
 
-    // Quién es la clínica: se puede consultar siempre y solo se crea una vez
-    match /meta/admin {
+    // --- Administrador único -------------------------------------------
+    match /meta/owner {
       allow get: if true;
-      allow create: if signedIn() && !exists(adminPath())
-                    && request.resource.data.uid == uid();
+      allow create: if signedIn() && !exists(ownerPath())
+                    && request.resource.data.uid == uid()
+                    && existsAfter(/databases/$(database)/documents/ownerKeys/$(uid()));
       allow update, delete: if false;
     }
+    // La súper contraseña se comprueba aquí y nunca se puede leer
+    match /ownerKeys/{userId} {
+      allow create: if signedIn() && userId == uid()
+                    && hashing.sha256(request.resource.data.key).toHexString().lower()
+                       == '5bb84f088791b57791ff27a9aa197f78a84547e4a42cac7d868cbe7baa6b36b6';
+      allow read, update, delete: if false;
+    }
 
-    // Datos de la clínica (horario, teléfono…): todos los leen, solo la clínica edita
-    match /clinic/{doc} {
+    // --- Datos públicos de la barbería -----------------------------------
+    match /shop/{doc} {
       allow read: if true;
-      allow write: if isAdmin();
+      allow write: if isOwner();
+    }
+    match /services/{id} {
+      allow read: if true;
+      allow write: if isOwner();
+    }
+    match /barbers/{id} {
+      allow read: if true;
+      allow write: if isOwner();
     }
 
-    // Perfiles de usuario
+    // --- Clientes --------------------------------------------------------
     match /users/{userId} {
-      allow read: if signedIn() && (userId == uid() || isAdmin());
+      allow read: if signedIn() && (userId == uid() || isOwner());
       allow create, update: if signedIn() && userId == uid();
-      allow delete: if signedIn() && (userId == uid() || isAdmin());
-    }
-
-    // Animales: cada cliente ve y gestiona los suyos; la clínica, todos
-    match /pets/{petId} {
-      allow read: if isAdmin() || (signedIn() && resource.data.ownerId == uid());
-      allow create: if isAdmin() || (signedIn() && request.resource.data.ownerId == uid());
-      allow update: if isAdmin() || (signedIn() && resource.data.ownerId == uid()
-                        && request.resource.data.ownerId == uid()
-                        && !changes().hasAny(['pendingAmount', 'readByAdminAt']));
-      allow delete: if isAdmin() || (signedIn() && resource.data.ownerId == uid());
-
-      // Chat privado de cada animal con la clínica
-      match /messages/{msgId} {
-        allow read: if isAdmin() || (signedIn() && petOwner(petId) == uid());
-        allow create: if (isAdmin() && request.resource.data.fromAdmin == true && request.resource.data.from == uid())
-                      || (signedIn() && petOwner(petId) == uid()
-                          && request.resource.data.from == uid() && request.resource.data.fromAdmin == false);
-        allow update, delete: if isAdmin();
-      }
-
-      // Cartilla: el cliente la lee; solo la clínica escribe
-      match /records/{recId} {
-        allow read: if isAdmin() || (signedIn() && petOwner(petId) == uid());
-        allow write: if isAdmin();
+      allow delete: if signedIn() && (userId == uid() || isOwner());
+      // dispositivos para las notificaciones push
+      match /tokens/{token} {
+        allow read, write: if signedIn() && userId == uid();
       }
     }
-
-    // Citas
-    match /appointments/{apptId} {
-      allow read: if isAdmin() || (signedIn() && resource.data.ownerId == uid());
-      allow create: if isAdmin() || (signedIn() && request.resource.data.ownerId == uid()
-                        && request.resource.data.status == 'pendiente');
-      allow update: if isAdmin() || (signedIn() && resource.data.ownerId == uid()
-                        && changes().hasOnly(['status']) && request.resource.data.status == 'cancelada');
-      allow delete: if isAdmin() || (signedIn() && resource.data.ownerId == uid());
+    // Notas privadas del barbero sobre cada cliente
+    match /clientNotes/{userId} {
+      allow read, write: if isOwner();
     }
 
-    // Archivos (troceados): los ve el dueño del animal y la clínica
-    match /files/{fileId} {
-      allow read: if isAdmin() || (signedIn() && resource.data.ownerId == uid());
-      allow create: if signedIn() && request.resource.data.createdBy == uid()
-                    && (isAdmin() || request.resource.data.ownerId == uid());
-      allow delete: if isAdmin() || (signedIn() && resource.data.createdBy == uid());
+    // --- Reservas --------------------------------------------------------
+    match /bookings/{id} {
+      allow read: if isOwner() || (signedIn() && resource.data.userId == uid());
+      allow create: if isOwner() || (signedIn() && request.resource.data.userId == uid()
+                        && request.resource.data.status == 'confirmada');
+      allow update: if isOwner()
+        || (signedIn() && resource.data.userId == uid() && resource.data.status == 'confirmada'
+            && changes().hasOnly(['status', 'cancelledAt']) && request.resource.data.status == 'cancelada')
+        || (signedIn() && resource.data.userId == uid() && resource.data.status == 'completada'
+            && changes().hasOnly(['rating', 'review', 'ratedAt']));
+      allow delete: if isOwner();
+    }
+    // Huecos ocupados (uno por cada 15 min). El id es único, así que es
+    // imposible reservar dos veces la misma hora con el mismo barbero.
+    match /slots/{id} {
+      allow read: if signedIn();
+      allow create: if isOwner() || (signedIn() && request.resource.data.userId == uid()
+                        && getAfter(/databases/$(database)/documents/bookings/$(request.resource.data.bookingId)).data.userId == uid());
+      allow delete: if isOwner() || (signedIn() && resource.data.userId == uid());
+      allow update: if false;
+    }
 
-      match /chunks/{n} {
-        allow read: if isAdmin()
-                    || (signedIn() && get(/databases/$(database)/documents/files/$(fileId)).data.ownerId == uid());
-        allow create: if isAdmin()
-                    || (signedIn() && get(/databases/$(database)/documents/files/$(fileId)).data.createdBy == uid());
-        allow delete: if isAdmin()
-                    || (signedIn() && get(/databases/$(database)/documents/files/$(fileId)).data.createdBy == uid());
-      }
+    // --- Fotos de los cortes ---------------------------------------------
+    match /photos/{id} {
+      allow read: if isOwner() || (signedIn() && resource.data.userId == uid());
+      allow create: if isOwner();
+      allow delete: if isOwner();
+    }
+
+    // --- Notificaciones --------------------------------------------------
+    // to: id del cliente, 'owner' (para el barbero) o 'all' (promociones)
+    match /notifications/{id} {
+      allow read: if signedIn() && (resource.data.to == uid() || resource.data.to == 'all'
+                     || (resource.data.to == 'owner' && isOwner()));
+      allow create: if signedIn() && request.resource.data.from == uid()
+                    && (request.resource.data.to == 'owner' || isOwner());
+      allow update, delete: if isOwner();
     }
   }
 }
