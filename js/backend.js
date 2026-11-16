@@ -1,5 +1,5 @@
 /* Barbería — datos en Firebase (Authentication + Cloud Firestore), en tiempo real */
-import { compressImage } from './ui.js?v=8';
+import { compressImage } from './ui.js?v=9';
 
 const V = '10.12.2';
 const BASE = `https://www.gstatic.com/firebasejs/${V}`;

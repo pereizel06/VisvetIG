@@ -1,7 +1,7 @@
 /* Barbería — service worker
    · Abre la app al instante y funciona como app instalada.
    · Recibe las notificaciones push (Firebase Cloud Messaging) con la app cerrada. */
-const CACHE = 'barberia-v8';
+const CACHE = 'barberia-v9';
 const SHELL = ['./', 'index.html', 'css/app.css', 'js/app.js', 'js/ui.js', 'js/config.js', 'js/backend.js', 'assets/favicon.svg', 'manifest.webmanifest'];
 
 // Push: la configuración de Firebase llega en la URL de registro (?cfg=…)
@@ -30,7 +30,8 @@ self.addEventListener('fetch', (e) => {
   const url = new URL(e.request.url);
   if (e.request.method !== 'GET' || url.origin !== location.origin) return;
   e.respondWith(
-    fetch(e.request).then((res) => {
+    // siempre pregunta al servidor si hay una versión nueva (sin usar copias antiguas)
+    fetch(e.request.url, { cache: 'no-cache', credentials: 'same-origin' }).then((res) => {
       const copy = res.clone();
       caches.open(CACHE).then((c) => c.put(e.request, copy));
       return res;

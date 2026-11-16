@@ -1,10 +1,10 @@
 /* Barbería — aplicación (clientes y administrador) */
-import { CONFIG } from './config.js?v=8';
+import { CONFIG } from './config.js?v=9';
 import {
   $, $$, esc, I, todayISO, parseISO, fmtDate, fmtDay, fmtMoney, timeAgo, initials, greeting, haptic, toast,
   openSheet, closeSheet, anySheetOpen, actionSheet, confirmSheet, promptSheet, compressImage, icsFor, downloadBlob, confetti, countUp,
-} from './ui.js?v=8';
-import { createBackend, toMin, toHHMM, STEP } from './backend.js?v=8';
+} from './ui.js?v=9';
+import { createBackend, toMin, toHHMM, STEP } from './backend.js?v=9';
 
 /* =========================================================
  * Estado
