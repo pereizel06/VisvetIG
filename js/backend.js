@@ -1,5 +1,5 @@
 /* Barbería — datos en Firebase (Authentication + Cloud Firestore), en tiempo real */
-import { compressImage } from './ui.js?v=7';
+import { compressImage } from './ui.js?v=8';
 
 const V = '10.12.2';
 const BASE = `https://www.gstatic.com/firebasejs/${V}`;
@@ -40,8 +40,9 @@ export async function createBackend(cfg) {
   const C = (...p) => collection(db, ...p);
   const newId = (col) => doc(C(col)).id;
   const list = (s) => s.docs.map((d) => ({ id: d.id, ...d.data() }));
-  const fail = (e) => { console.error(e); window.dispatchEvent(new CustomEvent('backend-error', { detail: tr(e).message })); };
-  const watch = (q, cb) => onSnapshot(q, (s) => cb(list(s)), fail);
+  const fail = (e) => { console.error(e); window.dispatchEvent(new CustomEvent('backend-error', { detail: tr(e).message, code: e && e.code })); };
+  // si la lectura falla, avisamos y entregamos una lista vacía para que la app no se quede cargando
+  const watch = (q, cb) => { let got = false; return onSnapshot(q, (s) => { got = true; cb(list(s)); }, (e) => { fail(e); if (!got) { got = true; cb([]); } }); };
   const OWNER = doc(db, 'meta', 'owner');
   let ownerUid = null;
   const photoCache = new Map();
@@ -109,7 +110,7 @@ export async function createBackend(cfg) {
     },
 
     /* ---------- Perfil y clientes ---------- */
-    watchProfile(uid, cb) { return onSnapshot(doc(db, 'users', uid), (s) => cb(s.exists() ? { id: s.id, ...s.data() } : null), fail); },
+    watchProfile(uid, cb) { return onSnapshot(doc(db, 'users', uid), (s) => cb(s.exists() ? { id: s.id, ...s.data() } : null), (e) => { fail(e); cb(null); }); },
     async saveProfile(patch) { try { await setDoc(doc(db, 'users', B.user.uid), patch, { merge: true }); } catch (e) { throw tr(e); } },
     watchUsers(cb) { return watch(C('users'), cb); },
     watchClientNotes(cb) { return watch(C('clientNotes'), cb); },
@@ -183,8 +184,8 @@ export async function createBackend(cfg) {
       const parts = [[], []];
       const merge = () => cb([...parts[0], ...parts[1]].sort((a, b) => b.createdAt - a.createdAt));
       const mine = B.user.isAdmin ? 'owner' : B.user.uid;
-      const u1 = onSnapshot(query(C('notifications'), where('to', '==', mine)), (s) => { parts[0] = list(s); merge(); }, fail);
-      const u2 = onSnapshot(query(C('notifications'), where('to', '==', 'all')), (s) => { parts[1] = list(s); merge(); }, fail);
+      const u1 = onSnapshot(query(C('notifications'), where('to', '==', mine)), (s) => { parts[0] = list(s); merge(); }, (e) => { fail(e); merge(); });
+      const u2 = onSnapshot(query(C('notifications'), where('to', '==', 'all')), (s) => { parts[1] = list(s); merge(); }, (e) => { fail(e); merge(); });
       return () => { u1(); u2(); };
     },
     async notify(to, title, body, extra = {}) {

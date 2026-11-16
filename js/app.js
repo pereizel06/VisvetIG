@@ -1,16 +1,16 @@
 /* Barbería — aplicación (clientes y administrador) */
-import { CONFIG } from './config.js?v=7';
+import { CONFIG } from './config.js?v=8';
 import {
   $, $$, esc, I, todayISO, parseISO, fmtDate, fmtDay, fmtMoney, timeAgo, initials, greeting, haptic, toast,
   openSheet, closeSheet, anySheetOpen, actionSheet, confirmSheet, promptSheet, compressImage, icsFor, downloadBlob, confetti, countUp,
-} from './ui.js?v=7';
-import { createBackend, toMin, toHHMM, STEP } from './backend.js?v=7';
+} from './ui.js?v=8';
+import { createBackend, toMin, toHHMM, STEP } from './backend.js?v=8';
 
 /* =========================================================
  * Estado
  * ========================================================= */
 let B = null;
-const S = { user: null, profile: null, shop: null, services: [], barbers: [], bookings: [], users: [], notes: [], notifs: [], loaded: false, ownerExists: null };
+const S = { user: null, profile: null, shop: null, services: [], barbers: [], bookings: [], users: [], notes: [], notifs: [], loaded: false, ownerExists: null, loadError: false };
 const ui = { authTab: 'login', day: todayISO(), q: '', bk: {}, apptTab: 'up', slots: null, slotsDay: null };
 let subs = [], slotSub = null, lastRoute = '', swReg = null;
 const bootAt = Date.now();
@@ -45,7 +45,11 @@ async function boot() {
     return;
   }
   window.APP = B;
-  addEventListener('backend-error', (e) => toast(e.detail, 'error'));
+  // si Firebase deniega la lectura (reglas sin publicar o desactualizadas) lo mostramos claramente
+  addEventListener('backend-error', (e) => {
+    if (e.code === 'permission-denied' || /permiso/.test(e.detail || '')) { if (!S.loadError) { S.loadError = true; schedule(); } return; }
+    toast(e.detail, 'error');
+  });
   addEventListener('push-foreground', (e) => { const n = (e.detail && e.detail.notification) || {}; if (n.title) toast(`${n.title}: ${n.body || ''}`, 'chat'); });
   // datos públicos de la barbería (también antes de iniciar sesión)
   B.watchShop((s) => { S.shop = s; document.title = shop().name; schedule(); });
@@ -62,10 +66,12 @@ async function boot() {
 function onAuth(user) {
   subs.forEach((u) => u()); subs = [];
   if (slotSub) { slotSub(); slotSub = null; ui.slotsDay = null; }
-  Object.assign(S, { user, profile: null, bookings: [], users: [], notes: [], notifs: [], loaded: false });
+  Object.assign(S, { user, profile: null, bookings: [], users: [], notes: [], notifs: [], loaded: false, loadError: false });
   if (user) {
     let pending = user.isAdmin ? 3 : 2;
     const ready = () => { if (--pending === 0) { S.loaded = true; schedule(); } };
+    // nunca nos quedamos cargando: como mucho 8 segundos
+    setTimeout(() => { if (S.user === user && !S.loaded) { S.loaded = true; schedule(); } }, 8000);
     const once = (fn) => { let d = false; return (v) => { fn(v); if (!d) { d = true; ready(); } }; };
     subs.push(B.watchProfile(user.uid, (p) => { S.profile = p; schedule(); }));
     subs.push(B.watchBookings(once((l) => { S.bookings = l; schedule(); })));
@@ -133,6 +139,7 @@ function draw(isNav, opts = {}) {
   const y = scrollY;
   let v;
   if (!S.user) v = AuthView();
+  else if (S.loadError) v = ErrorView();
   else if (!S.loaded) v = { html: `<div class="page"><div class="sk sk-title"></div><div class="sk sk-card"></div><div class="sk sk-row"></div><div class="sk sk-row"></div></div>`, tabbar: true };
   else v = (isAdmin() ? adminView : clientView)(r);
   $('#view').innerHTML = v.html;
@@ -295,6 +302,23 @@ function barChart(data, { valueKey = 'n', label = (d) => d.k, fmt = (v) => v, hi
   return `<div class="bars">${data.map((d, i) => `<div class="bar${highlightLast && i === data.length - 1 ? ' hl' : ''}"><span class="bar-val">${d[valueKey] ? fmt(d[valueKey]) : ''}</span><span class="bar-track"><span class="bar-fill" style="--h:${d[valueKey] ? Math.max(6, (d[valueKey] / max) * 100) : 0}%"></span></span><small>${label(d)}</small></div>`).join('')}</div>`;
 }
 const monthLabel = (d) => MONTHS[Number(d.k.slice(5)) - 1];
+
+/* =========================================================
+ * Error de carga (permisos de Firebase)
+ * ========================================================= */
+function ErrorView() {
+  return {
+    tabbar: false, cls: 'error',
+    html: `<div class="center-screen"><div class="glass card pad verify rise">
+      <div class="empty-ico">${I.shield}</div>
+      <h2>No se han podido cargar tus datos</h2>
+      <p class="muted">La base de datos ha rechazado la conexión. Normalmente pasa porque las reglas de seguridad de Firebase aún no están publicadas o son de una versión anterior de la app.</p>
+      <p class="tiny muted">Si eres el administrador: Firebase → Firestore Database → Reglas → pega el contenido de <b>firestore.rules</b> y pulsa Publicar.</p>
+      <button class="btn primary block lg" data-act="reload">Reintentar</button>
+      <button class="btn plain block" data-act="logout-now">Cerrar sesión</button>
+    </div></div>`,
+  };
+}
 
 /* =========================================================
  * Acceso
@@ -1060,6 +1084,8 @@ const ACT = {
   back: () => (history.length > 1 ? history.back() : go('#/')),
   seg: (el) => { ui[el.dataset.seg] = el.dataset.val; const s = el.closest('.seg'); $$('.seg-btn', s).forEach((b) => b.classList.toggle('active', b === el)); layoutSeg(s); haptic(4); setTimeout(() => draw(false), 170); },
   forgot: async () => { const email = await promptSheet('Recuperar contraseña', { label: 'Tu correo', type: 'email', value: ($('#auth-form') || {}).email?.value || '', ok: 'Enviar enlace' }); if (!email) return; try { await B.resetPassword(email); toast('Te hemos enviado un correo para crear una contraseña nueva'); } catch (ex) { toast(ex.message, 'error'); } },
+  reload: () => location.reload(),
+  'logout-now': async () => { await B.signOut(); location.hash = '#/'; },
   logout: async () => { if (await confirmSheet('¿Cerrar sesión?', 'Cerrar sesión')) { await B.signOut(); location.hash = '#/'; } },
   'pick-svc': (el) => { ui.bk.serviceId = el.dataset.id; ui.bk.time = null; haptic(5); draw(false); },
   'pick-barber': (el) => { ui.bk.barberId = el.dataset.id; ui.bk.time = null; haptic(5); draw(false); },

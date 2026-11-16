@@ -1,7 +1,7 @@
 /* Barbería — service worker
    · Abre la app al instante y funciona como app instalada.
    · Recibe las notificaciones push (Firebase Cloud Messaging) con la app cerrada. */
-const CACHE = 'barberia-v7';
+const CACHE = 'barberia-v8';
 const SHELL = ['./', 'index.html', 'css/app.css', 'js/app.js', 'js/ui.js', 'js/config.js', 'js/backend.js', 'assets/favicon.svg', 'manifest.webmanifest'];
 
 // Push: la configuración de Firebase llega en la URL de registro (?cfg=…)
